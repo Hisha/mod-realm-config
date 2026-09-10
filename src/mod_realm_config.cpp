@@ -54,24 +54,83 @@ struct Settings
 // Empty catalogs still return the singleton; any missing table/query error fails closed.
 // Control columns type/order/key precede 17 explicitly whitelisted text columns.
 constexpr char MetadataQuery[] = R"SQL(
-SELECT '0' AS record_type, 0 AS sort_order, '' AS record_key,
-       name AS f0, address AS f1, description AS f2, website_url AS f3,
-       client_version AS f4, CAST(client_build AS CHAR) AS f5,
-       CAST(auth_port AS CHAR) AS f6, CAST(world_port AS CHAR) AS f7,
-       config_url AS f8, client_executable AS f9, client_executable_sha256 AS f10,
-       portalkeeper_minimum_version AS f11, manifest_url AS f12, news_url AS f13,
-       status_url AS f14, calendar_url AS f15, armory_url AS f16
-FROM mod_realm_config WHERE id = 1
+SELECT
+       CONVERT('0' USING utf8mb4) COLLATE utf8mb4_unicode_ci AS record_type,
+       0 AS sort_order,
+       CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci AS record_key,
+
+       CONVERT(name USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f0,
+       CONVERT(address USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f1,
+       CONVERT(description USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f2,
+       CONVERT(website_url USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f3,
+       CONVERT(client_version USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f4,
+       CONVERT(CAST(client_build AS CHAR) USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f5,
+       CONVERT(CAST(auth_port AS CHAR) USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f6,
+       CONVERT(CAST(world_port AS CHAR) USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f7,
+       CONVERT(config_url USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f8,
+       CONVERT(client_executable USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f9,
+       CONVERT(client_executable_sha256 USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f10,
+       CONVERT(portalkeeper_minimum_version USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f11,
+       CONVERT(manifest_url USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f12,
+       CONVERT(news_url USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f13,
+       CONVERT(status_url USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f14,
+       CONVERT(calendar_url USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f15,
+       CONVERT(armory_url USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f16
+FROM mod_realm_config
+WHERE id = 1
+
 UNION ALL
-SELECT '1', sort_order, addon_key,
-       name, requirement, source_type, source_url, source_ref, install_directory,
-       '', '', '', '', '', '', '', '', '', '', ''
-FROM mod_realm_config_addon WHERE enabled = 1
+
+SELECT
+       CONVERT('1' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+       sort_order,
+       CONVERT(addon_key USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+
+       CONVERT(name USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+       CONVERT(requirement USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+       CONVERT(source_type USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+       CONVERT(source_url USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+       CONVERT(source_ref USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+       CONVERT(install_directory USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+       CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+       CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+       CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+       CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+       CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+       CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+       CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+       CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+       CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+       CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci
+FROM mod_realm_config_addon
+WHERE enabled = 1
+
 UNION ALL
-SELECT '2', sort_order, patch_key,
-       name, requirement, source_type, source_url, file_name, install_directory, sha256,
-       '', '', '', '', '', '', '', '', '', ''
-FROM mod_realm_config_patch WHERE enabled = 1
+
+SELECT
+       CONVERT('2' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+       sort_order,
+       CONVERT(patch_key USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+
+       CONVERT(name USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+       CONVERT(requirement USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+       CONVERT(source_type USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+       CONVERT(source_url USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+       CONVERT(file_name USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+       CONVERT(install_directory USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+       CONVERT(sha256 USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+       CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+       CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+       CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+       CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+       CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+       CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+       CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+       CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+       CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci
+FROM mod_realm_config_patch
+WHERE enabled = 1
+
 ORDER BY record_type, sort_order, BINARY record_key
 )SQL";
 
