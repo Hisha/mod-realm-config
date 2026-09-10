@@ -1,0 +1,2 @@
+RealmConfig.Enable = 1
+RealmConfig.OutputDirectory = "/mnt/ai_data/linkable/example.realm.conf"
