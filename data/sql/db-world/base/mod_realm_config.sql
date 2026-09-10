@@ -3,6 +3,7 @@
 -- Re-importing preserves existing administrator values. Never store secrets here.
 CREATE TABLE IF NOT EXISTS `mod_realm_config` (
   `id` TINYINT UNSIGNED NOT NULL,
+  `realm_key` VARCHAR(64) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
   `name` VARCHAR(255) NOT NULL,
   `address` VARCHAR(255) NOT NULL,
   `description` VARCHAR(2048) NOT NULL DEFAULT '',
@@ -64,7 +65,7 @@ CREATE TABLE IF NOT EXISTS `mod_realm_config_patch` (
 
 -- Safe example metadata lives ONLY in SQL; replace it before serving the file.
 INSERT INTO `mod_realm_config`
-  (`id`, `name`, `address`, `description`, `website_url`, `client_version`,
+  (`id`, `realm_key`, `name`, `address`, `description`, `website_url`, `client_version`,
    `client_build`, `auth_port`, `world_port`, `config_url`)
-SELECT 1, 'Example Realm', 'realm.example.com', '', '', '3.3.5a', 12340, 3724, 8085, ''
+SELECT 1, 'example', 'Example Realm', 'realm.example.com', '', '', '3.3.5a', 12340, 3724, 8085, ''
 WHERE NOT EXISTS (SELECT 1 FROM `mod_realm_config` WHERE `id` = 1);

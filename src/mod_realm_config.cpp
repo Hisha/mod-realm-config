@@ -35,6 +35,7 @@ struct Patch
 struct Settings
 {
     std::string OutputDirectory;
+    std::string RealmKey;
     std::string Name;
     std::string Address;
     std::string Description;
@@ -52,49 +53,44 @@ struct Settings
 
 // One statement gives a consistent snapshot across all three InnoDB tables.
 // Empty catalogs still return the singleton; any missing table/query error fails closed.
-// Control columns type/order/key precede 17 explicitly whitelisted text columns.
+// Control columns type/order/key precede 18 explicitly whitelisted text columns.
 constexpr char MetadataQuery[] = R"SQL(
 SELECT
        CONVERT('0' USING utf8mb4) COLLATE utf8mb4_unicode_ci AS record_type,
        0 AS sort_order,
        CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci AS record_key,
-
-       CONVERT(name USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f0,
-       CONVERT(address USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f1,
-       CONVERT(description USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f2,
-       CONVERT(website_url USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f3,
-       CONVERT(client_version USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f4,
-       CONVERT(CAST(client_build AS CHAR) USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f5,
-       CONVERT(CAST(auth_port AS CHAR) USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f6,
-       CONVERT(CAST(world_port AS CHAR) USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f7,
-       CONVERT(config_url USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f8,
-       CONVERT(client_executable USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f9,
-       CONVERT(client_executable_sha256 USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f10,
-       CONVERT(portalkeeper_minimum_version USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f11,
-       CONVERT(manifest_url USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f12,
-       CONVERT(news_url USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f13,
-       CONVERT(status_url USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f14,
-       CONVERT(calendar_url USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f15,
-       CONVERT(armory_url USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f16
+       CONVERT(realm_key USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f0,
+       CONVERT(name USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f1,
+       CONVERT(address USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f2,
+       CONVERT(description USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f3,
+       CONVERT(website_url USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f4,
+       CONVERT(client_version USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f5,
+       CONVERT(CAST(client_build AS CHAR) USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f6,
+       CONVERT(CAST(auth_port AS CHAR) USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f7,
+       CONVERT(CAST(world_port AS CHAR) USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f8,
+       CONVERT(config_url USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f9,
+       CONVERT(client_executable USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f10,
+       CONVERT(client_executable_sha256 USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f11,
+       CONVERT(portalkeeper_minimum_version USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f12,
+       CONVERT(manifest_url USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f13,
+       CONVERT(news_url USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f14,
+       CONVERT(status_url USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f15,
+       CONVERT(calendar_url USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f16,
+       CONVERT(armory_url USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f17
 FROM mod_realm_config
 WHERE id = 1
-
 UNION ALL
-
 SELECT
        CONVERT('1' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
        sort_order,
        CONVERT(addon_key USING utf8mb4) COLLATE utf8mb4_unicode_ci,
-
-       /* f0-f5: addon data */
        CONVERT(name USING utf8mb4) COLLATE utf8mb4_unicode_ci,
        CONVERT(requirement USING utf8mb4) COLLATE utf8mb4_unicode_ci,
        CONVERT(source_type USING utf8mb4) COLLATE utf8mb4_unicode_ci,
        CONVERT(source_url USING utf8mb4) COLLATE utf8mb4_unicode_ci,
        CONVERT(source_ref USING utf8mb4) COLLATE utf8mb4_unicode_ci,
        CONVERT(install_directory USING utf8mb4) COLLATE utf8mb4_unicode_ci,
-
-       /* f6-f16: unused for addons = 11 blanks */
+       CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
        CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
        CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
        CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
@@ -108,15 +104,11 @@ SELECT
        CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci
 FROM mod_realm_config_addon
 WHERE enabled = 1
-
 UNION ALL
-
 SELECT
        CONVERT('2' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
        sort_order,
        CONVERT(patch_key USING utf8mb4) COLLATE utf8mb4_unicode_ci,
-
-       /* f0-f6: patch data */
        CONVERT(name USING utf8mb4) COLLATE utf8mb4_unicode_ci,
        CONVERT(requirement USING utf8mb4) COLLATE utf8mb4_unicode_ci,
        CONVERT(source_type USING utf8mb4) COLLATE utf8mb4_unicode_ci,
@@ -124,8 +116,7 @@ SELECT
        CONVERT(file_name USING utf8mb4) COLLATE utf8mb4_unicode_ci,
        CONVERT(install_directory USING utf8mb4) COLLATE utf8mb4_unicode_ci,
        CONVERT(sha256 USING utf8mb4) COLLATE utf8mb4_unicode_ci,
-
-       /* f7-f16: unused for patches = 10 blanks */
+       CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
        CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
        CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
        CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
@@ -138,7 +129,6 @@ SELECT
        CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci
 FROM mod_realm_config_patch
 WHERE enabled = 1
-
 ORDER BY record_type, sort_order, BINARY record_key
 )SQL";
 
@@ -146,7 +136,7 @@ Settings LoadMetadata(QueryResult const& result, std::string const& directory)
 {
     if (!result)
         throw std::runtime_error("Schema v1 SQL query failed or singleton id=1 is missing; apply module migrations and check database logs");
-    if (result->GetFieldCount() != 20)
+    if (result->GetFieldCount() != 21)
         throw std::runtime_error("unexpected Schema v1 SQL result shape");
     Settings settings;
     settings.OutputDirectory = directory;
@@ -154,7 +144,7 @@ Settings LoadMetadata(QueryResult const& result, std::string const& directory)
     do
     {
         Field* fields = result->Fetch();
-        for (unsigned i = 0; i < 20; ++i)
+        for (unsigned i = 0; i < 21; ++i)
             if (fields[i].IsNull())
                 throw std::runtime_error("mod_realm_config SQL data contains an unexpected NULL");
         auto value = [fields](unsigned i) { return fields[i + 3].Get<std::string>(); };
@@ -163,23 +153,24 @@ Settings LoadMetadata(QueryResult const& result, std::string const& directory)
         {
             if (found) throw std::runtime_error("duplicate singleton configuration row");
             found = true;
-            settings.Name = value(0);
-            settings.Address = value(1);
-            settings.Description = value(2);
-            settings.WebsiteURL = value(3);
-            settings.ClientVersion = value(4);
-            settings.ClientBuild = value(5);
-            settings.AuthPort = value(6);
-            settings.WorldPort = value(7);
-            settings.ConfigURL = value(8);
-            settings.Executable = value(9);
-            settings.ExecutableSHA256 = value(10);
-            settings.MinimumVersion = value(11);
-            settings.ManifestURL = value(12);
-            settings.NewsURL = value(13);
-            settings.StatusURL = value(14);
-            settings.CalendarURL = value(15);
-            settings.ArmoryURL = value(16);
+            settings.RealmKey = value(0);
+            settings.Name = value(1);
+            settings.Address = value(2);
+            settings.Description = value(3);
+            settings.WebsiteURL = value(4);
+            settings.ClientVersion = value(5);
+            settings.ClientBuild = value(6);
+            settings.AuthPort = value(7);
+            settings.WorldPort = value(8);
+            settings.ConfigURL = value(9);
+            settings.Executable = value(10);
+            settings.ExecutableSHA256 = value(11);
+            settings.MinimumVersion = value(12);
+            settings.ManifestURL = value(13);
+            settings.NewsURL = value(14);
+            settings.StatusURL = value(15);
+            settings.CalendarURL = value(16);
+            settings.ArmoryURL = value(17);
         }
         else if (type == "1")
             settings.Addons.push_back({fields[2].Get<std::string>(), value(0), value(1),
@@ -299,6 +290,16 @@ void ValidateKey(std::string const& value)
         throw std::runtime_error("section key must contain 1..64 ASCII letters, digits, underscores or hyphens");
 }
 
+void ValidateRealmKey(std::string const& value)
+{
+    if (value.empty() || value.size() > 64 ||
+        !std::all_of(value.begin(), value.end(), [](unsigned char c)
+        {
+            return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-';
+        }))
+        throw std::runtime_error("mod_realm_config.realm_key must contain 1..64 lowercase ASCII letters, digits, underscores or hyphens");
+}
+
 void ValidateHash(std::string& value, char const* key)
 {
     if (value.empty()) return;
@@ -385,6 +386,7 @@ void ValidateCatalogs(Settings& settings)
 void ValidateSettings(Settings& settings)
 {
     ValidateText(settings.OutputDirectory, "RealmConfig.OutputDirectory", true);
+    ValidateRealmKey(settings.RealmKey);
     ValidateText(settings.Name, "mod_realm_config.name", true);
     ValidateText(settings.Address, "mod_realm_config.address", true);
     if (settings.Address.find_first_of(" /\\\"'\t=#;@") != std::string::npos ||
@@ -445,20 +447,24 @@ std::string BuildConfiguration(Settings const& settings)
     return output;
 }
 
+fs::path RealmConfigFileName(Settings const& settings)
+{
+    return fs::path(settings.RealmKey + ".realm.conf");
+}
+
 struct TemporaryDirectory
 {
     fs::path Path;
     ~TemporaryDirectory()
     {
         std::error_code ignored;
-        fs::remove(Path / "realm.conf", ignored);
-        fs::remove(Path, ignored);
+        fs::remove_all(Path, ignored);
     }
 };
 
 fs::path PublishConfiguration(Settings const& settings, std::string const& output)
 {
-	fs::path directory = fs::path(settings.OutputDirectory);
+    fs::path directory = fs::path(settings.OutputDirectory);
     fs::create_directories(directory);
     // Atomically reserve a private staging name, avoiding symlinks and concurrent writers.
     // The staged file stays on the destination filesystem for the final rename.
@@ -474,13 +480,13 @@ fs::path PublishConfiguration(Settings const& settings, std::string const& outpu
     if (staging.empty()) throw std::runtime_error("cannot reserve temporary publication directory");
     TemporaryDirectory temporary{staging};
     fs::permissions(staging, fs::perms::owner_all, fs::perm_options::replace);
-    auto stagedFile = staging / "realm.conf";
+    auto stagedFile = staging / RealmConfigFileName(settings);
     std::ofstream stream(stagedFile, std::ios::binary | std::ios::trunc);
     stream.exceptions(std::ios::badbit | std::ios::failbit);
     stream.write(output.data(), static_cast<std::streamsize>(output.size()));
     stream.flush();
     stream.close(); // A close failure also prevents publication.
-    auto target = directory / "realm.conf";
+    auto target = directory / RealmConfigFileName(settings);
     fs::rename(stagedFile, target); // Never remove the previous file to work around a rename error.
     return target;
 }
@@ -538,7 +544,7 @@ private:
             auto settings = LoadMetadata(result, _directory);
             ValidateSettings(settings);
             auto output = BuildConfiguration(settings);
-            auto target = fs::path(_directory) / "realm.conf";
+            auto target = fs::path(_directory) / RealmConfigFileName(settings);
             if (output != _lastOutput || target != _lastTarget || !fs::is_regular_file(target))
             {
                 PublishConfiguration(settings, output);
