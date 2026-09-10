@@ -11,6 +11,8 @@
 #include <filesystem>
 #include <fstream>
 #include <optional>
+#include <set>
+#include <algorithm>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -19,6 +21,16 @@
 namespace
 {
 namespace fs = std::filesystem;
+
+struct Addon
+{
+    std::string Key, Name, Requirement, SourceType, SourceURL, Ref, InstallDirectory;
+};
+
+struct Patch
+{
+    std::string Key, Name, Requirement, SourceType, SourceURL, FileName, InstallDirectory, SHA256;
+};
 
 struct Settings
 {
@@ -31,28 +43,87 @@ struct Settings
     std::string ClientBuild;
     std::string AuthPort;
     std::string WorldPort;
-    std::string UpdateURL;
+    std::string ConfigURL;
+    std::string Executable, ExecutableSHA256, MinimumVersion;
+    std::string ManifestURL, NewsURL, StatusURL, CalendarURL, ArmoryURL;
+    std::vector<Addon> Addons;
+    std::vector<Patch> Patches;
 };
 
-// Single explicit row and column whitelist; no server configuration is exported.
-constexpr char MetadataQuery[] =
-    "SELECT name, address, description, website_url, client_version, "
-    "CAST(client_build AS CHAR), CAST(auth_port AS CHAR), CAST(world_port AS CHAR), update_url "
-    "FROM mod_realm_config WHERE id = 1";
+// One statement gives a consistent snapshot across all three InnoDB tables.
+// Empty catalogs still return the singleton; any missing table/query error fails closed.
+// Control columns type/order/key precede 17 explicitly whitelisted text columns.
+constexpr char MetadataQuery[] = R"SQL(
+SELECT '0' AS record_type, 0 AS sort_order, '' AS record_key,
+       name AS f0, address AS f1, description AS f2, website_url AS f3,
+       client_version AS f4, CAST(client_build AS CHAR) AS f5,
+       CAST(auth_port AS CHAR) AS f6, CAST(world_port AS CHAR) AS f7,
+       config_url AS f8, client_executable AS f9, client_executable_sha256 AS f10,
+       portalkeeper_minimum_version AS f11, manifest_url AS f12, news_url AS f13,
+       status_url AS f14, calendar_url AS f15, armory_url AS f16
+FROM mod_realm_config WHERE id = 1
+UNION ALL
+SELECT '1', sort_order, addon_key,
+       name, requirement, source_type, source_url, source_ref, install_directory,
+       '', '', '', '', '', '', '', '', '', '', ''
+FROM mod_realm_config_addon WHERE enabled = 1
+UNION ALL
+SELECT '2', sort_order, patch_key,
+       name, requirement, source_type, source_url, file_name, install_directory, sha256,
+       '', '', '', '', '', '', '', '', '', ''
+FROM mod_realm_config_patch WHERE enabled = 1
+ORDER BY record_type, sort_order, BINARY record_key
+)SQL";
 
 Settings LoadMetadata(QueryResult const& result, std::string const& directory)
 {
     if (!result)
-        throw std::runtime_error("world.mod_realm_config row id=1 is missing or the query failed; "
-            "import the module SQL and check database logs");
-    Field* fields = result->Fetch();
-    for (unsigned i = 0; i < 9; ++i)
-        if (fields[i].IsNull())
-            throw std::runtime_error("world.mod_realm_config metadata columns must not be NULL");
-    return {directory, fields[0].Get<std::string>(), fields[1].Get<std::string>(),
-        fields[2].Get<std::string>(), fields[3].Get<std::string>(),
-        fields[4].Get<std::string>(), fields[5].Get<std::string>(),
-        fields[6].Get<std::string>(), fields[7].Get<std::string>(), fields[8].Get<std::string>()};
+        throw std::runtime_error("Schema v1 SQL query failed or singleton id=1 is missing; apply module migrations and check database logs");
+    if (result->GetFieldCount() != 20)
+        throw std::runtime_error("unexpected Schema v1 SQL result shape");
+    Settings settings;
+    settings.OutputDirectory = directory;
+    bool found = false;
+    do
+    {
+        Field* fields = result->Fetch();
+        for (unsigned i = 0; i < 20; ++i)
+            if (fields[i].IsNull())
+                throw std::runtime_error("mod_realm_config SQL data contains an unexpected NULL");
+        auto value = [fields](unsigned i) { return fields[i + 3].Get<std::string>(); };
+        auto type = fields[0].Get<std::string>();
+        if (type == "0")
+        {
+            if (found) throw std::runtime_error("duplicate singleton configuration row");
+            found = true;
+            settings.Name = value(0);
+            settings.Address = value(1);
+            settings.Description = value(2);
+            settings.WebsiteURL = value(3);
+            settings.ClientVersion = value(4);
+            settings.ClientBuild = value(5);
+            settings.AuthPort = value(6);
+            settings.WorldPort = value(7);
+            settings.ConfigURL = value(8);
+            settings.Executable = value(9);
+            settings.ExecutableSHA256 = value(10);
+            settings.MinimumVersion = value(11);
+            settings.ManifestURL = value(12);
+            settings.NewsURL = value(13);
+            settings.StatusURL = value(14);
+            settings.CalendarURL = value(15);
+            settings.ArmoryURL = value(16);
+        }
+        else if (type == "1")
+            settings.Addons.push_back({fields[2].Get<std::string>(), value(0), value(1),
+                value(2), value(3), value(4), value(5)});
+        else if (type == "2")
+            settings.Patches.push_back({fields[2].Get<std::string>(), value(0), value(1),
+                value(2), value(3), value(4), value(5), value(6)});
+        else throw std::runtime_error("unexpected Schema v1 SQL record type");
+    } while (result->NextRow());
+    if (!found) throw std::runtime_error("mod_realm_config singleton id=1 is missing");
+    return settings;
 }
 
 void ValidateText(std::string const& value, char const* key, bool required)
@@ -118,6 +189,130 @@ void ValidateURL(std::string const& value, char const* key)
         value.find(' ') != std::string::npos || value.find('\\') != std::string::npos)
         throw std::runtime_error(std::string("Invalid ") + key +
             " must be a public http(s) URL without embedded credentials or spaces");
+    // Basic authority checks only; no network requests or full URI parser.
+    std::string host = authority;
+    std::string port;
+    if (host.front() == '[')
+    {
+        auto close = host.find(']');
+        if (close == std::string::npos || close <= 1 ||
+            (close + 1 < host.size() && host[close + 1] != ':'))
+            throw std::runtime_error(std::string(key) + " has an invalid bracketed URL host");
+        if (close + 1 < host.size()) port = host.substr(close + 2);
+        host = host.substr(1, close - 1);
+        if (host.find(':') == std::string::npos ||
+            host.find_first_not_of("0123456789abcdefABCDEF:.") != std::string::npos)
+            throw std::runtime_error(std::string(key) + " has an invalid IPv6 URL host");
+    }
+    else
+    {
+        auto colon = host.find(':');
+        if (colon != std::string::npos) { port = host.substr(colon + 1); host.resize(colon); }
+        if (host.empty() || host.find_first_not_of(
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._") != std::string::npos)
+            throw std::runtime_error(std::string(key) + " has an invalid URL hostname (use ASCII/punycode)");
+    }
+    if (authority.back() == ':')
+        throw std::runtime_error(std::string(key) + " has an empty URL port");
+    if (!port.empty()) ValidateNumber(port, key, 65535);
+}
+
+std::string FoldASCII(std::string value)
+{
+    for (char& c : value) if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
+    return value;
+}
+
+void ValidateKey(std::string const& value)
+{
+    if (value.empty() || value.size() > 64 ||
+        !std::all_of(value.begin(), value.end(), [](unsigned char c)
+        { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') || c == '_' || c == '-'; }))
+        throw std::runtime_error("section key must contain 1..64 ASCII letters, digits, underscores or hyphens");
+}
+
+void ValidateHash(std::string& value, char const* key)
+{
+    if (value.empty()) return;
+    if (value.size() != 64 || !std::all_of(value.begin(), value.end(), [](unsigned char c)
+        { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'); }))
+        throw std::runtime_error(std::string(key) + " must be empty or exactly 64 hexadecimal characters");
+    value = FoldASCII(value);
+}
+
+void ValidateRelativePath(std::string const& value, char const* key, bool singleComponent)
+{
+    ValidateText(value, key, true);
+    if (value.find_first_of("\\:<>\"|?*") != std::string::npos || value.front() == '/')
+        throw std::runtime_error(std::string(key) + " must be a portable relative path using forward slashes");
+    std::size_t start = 0;
+    do
+    {
+        auto end = value.find('/', start);
+        auto part = value.substr(start, end == std::string::npos ? end : end - start);
+        if (part.empty() || part == "." || part == ".." || part.front() == ' ' ||
+            part.back() == ' ' || part.back() == '.' || (singleComponent && end != std::string::npos))
+            throw std::runtime_error(std::string(key) + " contains an unsafe path component");
+        auto stem = FoldASCII(part.substr(0, part.find('.')));
+        if (stem == "con" || stem == "prn" || stem == "aux" || stem == "nul" ||
+            (stem.size() == 4 && (stem.substr(0, 3) == "com" || stem.substr(0, 3) == "lpt") &&
+             stem[3] >= '1' && stem[3] <= '9'))
+            throw std::runtime_error(std::string(key) + " contains a reserved device name");
+        if (end == std::string::npos) break;
+        start = end + 1;
+    } while (true);
+}
+
+void ValidateSource(std::string const& requirement, std::string const& type, std::string const& url)
+{
+    if (requirement != "Required" && requirement != "Recommended" && requirement != "Optional")
+        throw std::runtime_error("Requirement must be Required, Recommended or Optional (case sensitive)");
+    if (type != "GitHub" && type != "HTTP")
+        throw std::runtime_error("SourceType must be GitHub or HTTP (case sensitive)");
+    ValidateText(url, "SourceURL", true);
+    ValidateURL(url, "SourceURL");
+}
+
+void ValidateCatalogs(Settings& settings)
+{
+    std::set<std::string> addonKeys, patchKeys;
+    for (auto& addon : settings.Addons)
+    {
+        try
+        {
+            ValidateKey(addon.Key);
+            if (!addonKeys.insert(FoldASCII(addon.Key)).second) throw std::runtime_error("duplicate addon key");
+            ValidateText(addon.Name, "Name", true);
+            ValidateSource(addon.Requirement, addon.SourceType, addon.SourceURL);
+            ValidateText(addon.Ref, "Ref", false);
+            ValidateRelativePath(addon.InstallDirectory, "InstallDirectory", true);
+        }
+        catch (std::exception const& error)
+        {
+            // Do not echo unvalidated database content into logs.
+            throw std::runtime_error("addon record #" + std::to_string(&addon - settings.Addons.data() + 1) +
+                " in SQL sort order: " + error.what());
+        }
+    }
+    for (auto& patch : settings.Patches)
+    {
+        try
+        {
+            ValidateKey(patch.Key);
+            if (!patchKeys.insert(FoldASCII(patch.Key)).second) throw std::runtime_error("duplicate patch key");
+            ValidateText(patch.Name, "Name", true);
+            ValidateSource(patch.Requirement, patch.SourceType, patch.SourceURL);
+            ValidateRelativePath(patch.FileName, "FileName", true);
+            ValidateRelativePath(patch.InstallDirectory, "InstallDirectory", false);
+            ValidateHash(patch.SHA256, "SHA256");
+        }
+        catch (std::exception const& error)
+        {
+            throw std::runtime_error("patch record #" + std::to_string(&patch - settings.Patches.data() + 1) +
+                " in SQL sort order: " + error.what());
+        }
+    }
 }
 
 void ValidateSettings(Settings& settings)
@@ -132,10 +327,19 @@ void ValidateSettings(Settings& settings)
     ValidateText(settings.Description, "mod_realm_config.description", false);
     ValidateText(settings.ClientVersion, "mod_realm_config.client_version", true);
     ValidateURL(settings.WebsiteURL, "mod_realm_config.website_url");
-    ValidateURL(settings.UpdateURL, "mod_realm_config.update_url");
+    ValidateURL(settings.ConfigURL, "mod_realm_config.config_url");
     ValidateNumber(settings.ClientBuild, "mod_realm_config.client_build", 65535);
     ValidateNumber(settings.AuthPort, "mod_realm_config.auth_port", 65535);
     ValidateNumber(settings.WorldPort, "mod_realm_config.world_port", 65535);
+    ValidateRelativePath(settings.Executable, "Client.Executable", true);
+    ValidateHash(settings.ExecutableSHA256, "Client.ExecutableSHA256");
+    ValidateText(settings.MinimumVersion, "Portalkeeper.MinimumVersion", true);
+    ValidateURL(settings.ManifestURL, "Services.ManifestURL");
+    ValidateURL(settings.NewsURL, "Services.NewsURL");
+    ValidateURL(settings.StatusURL, "Services.StatusURL");
+    ValidateURL(settings.CalendarURL, "Services.CalendarURL");
+    ValidateURL(settings.ArmoryURL, "Services.ArmoryURL");
+    ValidateCatalogs(settings);
 }
 
 using Fields = std::vector<std::pair<std::string, std::string>>;
@@ -149,17 +353,28 @@ void AppendSection(std::string& output, char const* name, Fields const& fields)
 
 std::string BuildConfiguration(Settings const& settings)
 {
-    std::string output = "# Generated by mod-realm-config. Public launcher metadata.\n"
-                         "# Edit world database table mod_realm_config (id=1), not this file.\n";
-    Fields server = {{"Name", settings.Name}, {"Address", settings.Address},
-        {"AuthPort", settings.AuthPort}, {"WorldPort", settings.WorldPort},
-        {"Description", settings.Description}};
-    if (!settings.WebsiteURL.empty()) server.emplace_back("WebsiteURL", settings.WebsiteURL);
-    AppendSection(output, "Server", server);
-    AppendSection(output, "Client", {{"Version", settings.ClientVersion}, {"Build", settings.ClientBuild}});
-    if (!settings.UpdateURL.empty())
-        AppendSection(output, "Updates", {{"UpdateURL", settings.UpdateURL}});
-    // Future Addons/Patches serializers belong here, once Portalkeeper's schema is agreed.
+    std::string output = "# Generated by mod-realm-config.\n"
+        "# Public configuration consumed by Portalkeeper.\n"
+        "# Do not edit this file manually.\n";
+    AppendSection(output, "Config", {{"SchemaVersion", "1"}});
+    AppendSection(output, "Realm", {{"Name", settings.Name}, {"Description", settings.Description},
+        {"WebsiteURL", settings.WebsiteURL}});
+    AppendSection(output, "Connection", {{"Address", settings.Address},
+        {"AuthPort", settings.AuthPort}, {"WorldPort", settings.WorldPort}});
+    AppendSection(output, "Client", {{"Version", settings.ClientVersion}, {"Build", settings.ClientBuild},
+        {"Executable", settings.Executable}, {"ExecutableSHA256", settings.ExecutableSHA256}});
+    AppendSection(output, "Portalkeeper", {{"MinimumVersion", settings.MinimumVersion}});
+    AppendSection(output, "Services", {{"ManifestURL", settings.ManifestURL}, {"NewsURL", settings.NewsURL},
+        {"StatusURL", settings.StatusURL}, {"CalendarURL", settings.CalendarURL},
+        {"ArmoryURL", settings.ArmoryURL}, {"ConfigURL", settings.ConfigURL}});
+    for (auto const& addon : settings.Addons)
+        AppendSection(output, ("Addon." + addon.Key).c_str(), {{"Name", addon.Name},
+            {"Requirement", addon.Requirement}, {"SourceType", addon.SourceType},
+            {"SourceURL", addon.SourceURL}, {"Ref", addon.Ref}, {"InstallDirectory", addon.InstallDirectory}});
+    for (auto const& patch : settings.Patches)
+        AppendSection(output, ("Patch." + patch.Key).c_str(), {{"Name", patch.Name},
+            {"Requirement", patch.Requirement}, {"SourceType", patch.SourceType}, {"SourceURL", patch.SourceURL},
+            {"FileName", patch.FileName}, {"InstallDirectory", patch.InstallDirectory}, {"SHA256", patch.SHA256}});
     return output;
 }
 
@@ -262,7 +477,8 @@ private:
                 PublishConfiguration(settings, output);
                 _lastOutput = std::move(output);
                 _lastTarget = std::move(target);
-                LOG_INFO("module", "mod-realm-config: generated {} from world database", _lastTarget.string());
+                LOG_INFO("module", "mod-realm-config: loaded SQL configuration; generated {} with {} addons and {} patches",
+                    _lastTarget.string(), settings.Addons.size(), settings.Patches.size());
             }
             else if (!_lastError.empty())
                 LOG_INFO("module", "mod-realm-config: database refresh recovered; published metadata is current");
@@ -277,7 +493,11 @@ private:
         _enabled = false;
         try
         {
-            if (!sConfigMgr->GetOption<bool>("RealmConfig.Enable", true)) return;
+            if (!sConfigMgr->GetOption<bool>("RealmConfig.Enable", true))
+            {
+                LOG_INFO("module", "mod-realm-config: disabled");
+                return;
+            }
             _directory = sConfigMgr->GetOption<std::string>("RealmConfig.OutputDirectory", "realm-config");
             ValidateText(_directory, "RealmConfig.OutputDirectory", true);
             auto seconds = sConfigMgr->GetOption<std::string>("RealmConfig.RefreshIntervalSeconds", "30");

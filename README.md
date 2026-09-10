@@ -1,187 +1,616 @@
 # mod-realm-config
 
-Publishes public Portalkeeper launcher metadata from the AzerothCore **world database**
-to `realm.conf`. Administrators edit a SQL row; worldserver picks up committed changes
-automatically. The module configuration contains operational controls only, never
-realm metadata. Portalkeeper needs neither database access nor worldserver configuration.
+`mod-realm-config` is an [AzerothCore](https://www.azerothcore.org/) module that generates and publishes a public `realm.conf` manifest for use by the [Portalkeeper](https://github.com/Hisha/Portalkeeper) launcher.
 
-## Install or upgrade
+The module provides a server-side source of truth for the information Portalkeeper needs to connect to and manage a realm, including:
 
-1. Place this module at `azerothcore-wotlk/modules/mod-realm-config`, then reconfigure,
-   rebuild and install AzerothCore using your normal CMake workflow with modules enabled.
-2. Import `data/sql/db-world/base/mod_realm_config.sql` into your **world** database
-   using your SQL administration tool. It creates the table and a safe example row;
-   re-importing preserves an existing row. The conventional SQL directory also permits
-   discovery by module-aware AzerothCore database update tooling. Verify the table
-   exists before relying on generation; the C++ module does not execute DDL.
-3. Set your public metadata in row `id=1`, replacing the example name/address.
-4. Install `conf/mod_realm_config.conf.dist` as `mod_realm_config.conf` in the server's
-   module configuration directory (normally `etc/modules/`). Retain your desired
-   output path; the portable example uses `realm-config`. Your original local path
-   `/mnt/ai_data/linkable/` can still be configured here.
-5. Start the rebuilt worldserver and separately configure HTTP hosting for the file.
+- Realm identity and connection information
+- Required WoW client version and build
+- Client executable validation
+- Portalkeeper compatibility requirements
+- Realm service and JSON feed locations
+- Required, recommended, and optional addons
+- Required, recommended, and optional client patches
 
-Upgrading from the earlier config-backed version requires deploying/restarting the
-rebuilt binary once. Move metadata into SQL and remove obsolete `RealmConfig.Name`,
-`Address`, `Description`, `WebsiteURL`, `ClientVersion`, `ClientBuild`, `AuthPort`,
-`WorldPort` and `UpdateURL` keys from the installed config. They are no longer read.
-Subsequent **metadata edits need no restart or config reload**.
+The generated `realm.conf` is intended to be hosted somewhere accessible to Portalkeeper, such as a web server or other public download location.
 
-No AzerothCore core changes or external dependencies. CMake registration is unchanged;
-`Addmod_realm_configScripts` follows the module directory's loader convention.
+## Architecture
 
-## Operational configuration
+The module follows a simple separation of responsibilities:
 
-| Key | Default | Meaning |
-| --- | --- | --- |
-| RealmConfig.Enable | 1 | Enable SQL refresh and publication; 0 leaves the existing file untouched |
-| RealmConfig.OutputDirectory | realm-config | Destination directory, absolute or relative to worldserver's working directory |
-| RealmConfig.RefreshIntervalSeconds | 30 | Poll interval in seconds, integer 1–86400 |
-
-These three values are never published. Change operational controls with the normal
-worldserver `reload config` command or a restart. A config reload also triggers an
-immediate database read when enabled. No metadata fallback exists in `.conf.dist` or
-C++; missing/invalid SQL data retains the last valid file.
-
-## Database metadata and live edits
-
-Table `mod_realm_config` belongs to the **world database**, not the auth database.
-Only primary-key row `id=1` is consumed: one publication per world database. Other IDs
-are ignored. Instances that need different metadata should use separate world
-databases and destinations; this version does not select a row by auth realm ID.
-
-| Column | Published key | Requirements / SQL example |
-| --- | --- | --- |
-| name | Server.Name | Required UTF-8 display name; Example Realm |
-| address | Server.Address | Required public hostname/IP without scheme or port; realm.example.com |
-| description | Server.Description | Optional single-line text; empty |
-| website_url | Server.WebsiteURL | Optional public HTTP(S) URL; empty omits key |
-| client_version | Client.Version | Required version label; 3.3.5a |
-| client_build | Client.Build | Integer 1–65535; 12340 |
-| auth_port | Server.AuthPort | Integer 1–65535; 3724 |
-| world_port | Server.WorldPort | Integer 1–65535; 8085 |
-| update_url | Updates.UpdateURL | Optional public URL of this file; empty omits section |
-
-The installer includes safe example values **in SQL only**. Edit through your existing
-SQL administration tool, for example:
-
-```sql
-UPDATE mod_realm_config
-SET name = 'Example Realm',
-    address = 'realm.example.com',
-    description = 'Welcome to our realm',
-    website_url = 'https://example.com/',
-    client_version = '3.3.5a',
-    client_build = 12340,
-    auth_port = 3724,
-    world_port = 8085,
-    update_url = 'https://example.com/realm.conf'
-WHERE id = 1;
+```text
+AzerothCore / Realm Administration
+              |
+              v
+      mod-realm-config
+       Database Tables
+              |
+              v
+      realm.conf Generator
+              |
+              v
+      Published realm.conf
+              |
+              v
+         Portalkeeper
 ```
 
-Use one UPDATE (or a committed transaction) for related edits so one poll sees a
-consistent row. Within the configured interval plus query completion/world update
-time, changes are validated and published. Portalkeeper's own refresh behavior and
-HTTP caches can add delay before a launcher displays new data. No `updated_at`
-maintenance or revision bump is required: the module compares serialized content.
+AzerothCore controls what the realm requires.
 
-All columns are NOT NULL; empty strings represent optional unset values. Text must
-be valid single-line UTF-8 without controls or surrounding spaces. Validation rejects
-empty required fields, invalid builds/ports and basic malformed URLs. It does not
-check DNS, availability or guarantee that an administrator-entered URL is public.
+`mod-realm-config` publishes those requirements.
 
-## Refresh and publication behavior
+Portalkeeper consumes the resulting configuration.
 
-Startup reads the row once synchronously after configuration and databases are ready.
-Manual config reload also reads once synchronously. Periodic reads use
-`WorldDatabase.AsyncQuery`; `WorldScript::OnUpdate` processes completed callbacks on
-the world thread. At most one asynchronous query is outstanding. Results issued
-before a disable or operational reload are discarded, preventing stale publication.
-File operations execute on the world thread, so use a responsive local destination.
+Portalkeeper does not require access to the AzerothCore database or private worldserver configuration.
 
-Unchanged metadata does not rewrite the file or emit routine success logs. A deleted
-publication is recreated on the next successful refresh. Manual edits to an existing
-file are unsupported; update SQL instead. SQL/query/validation/write failures preserve
-the old publication and retry next interval. The module suppresses repeated identical
-errors and logs recovery; AzerothCore's database layer may independently log SQL errors.
-A missing table or row is an error, never a reason to publish empty/default metadata.
+## Requirements
 
-Disabling performs no new queries or publication. An already queued query may complete,
-but its result cannot publish while disabled. The old file remains publicly available
-until removed by the administrator. Invalid operational settings suspend polling until
-a valid config reload. Database metadata problems recover automatically after correction.
+- AzerothCore WotLK
+- C++17 filesystem support
+- Access to the AzerothCore world database
+- Write permission to the configured output directory
 
-## Published format and Portalkeeper
+## Installation
 
-UTF-8 without BOM, LF newlines, fixed ordering, no timestamps, newline at EOF. Values
-are unquoted literals after the first `=`; there are no escapes, interpolation or
-inline comments. Both `/some/path` and `/some/path/` produce `/some/path/realm.conf`.
-With the SQL example row:
+Clone the module into your AzerothCore modules directory:
+
+```bash
+cd ~/azerothcore-wotlk/modules
+git clone https://github.com/Hisha/mod-realm-config.git
+```
+
+Apply the base world database SQL:
+
+```text
+data/sql/db-world/base/mod_realm_config.sql
+```
+
+Then rebuild AzerothCore normally.
+
+Copy the module configuration:
+
+```bash
+cp modules/mod-realm-config/conf/mod_realm_config.conf.dist \
+   env/etc/modules/mod_realm_config.conf
+```
+
+Adjust the configuration for your environment and restart `worldserver`.
+
+## Module Configuration
+
+Server-side operational settings are stored in:
+
+```text
+conf/mod_realm_config.conf.dist
+```
+
+Example:
 
 ```ini
-# Generated by mod-realm-config. Public launcher metadata.
-# Edit world database table mod_realm_config (id=1), not this file.
+RealmConfig.Enable = 1
+RealmConfig.OutputDirectory = "/mnt/ai_data/linkable/"
+RealmConfig.RefreshIntervalSeconds = 60
+```
 
-[Server]
+### RealmConfig.Enable
+
+Enables or disables realm configuration generation.
+
+```ini
+RealmConfig.Enable = 1
+```
+
+When disabled, the module does not generate or modify the published `realm.conf`.
+
+### RealmConfig.OutputDirectory
+
+Directory where the generated configuration is published.
+
+```ini
+RealmConfig.OutputDirectory = "/mnt/ai_data/linkable/"
+```
+
+The module generates:
+
+```text
+<OutputDirectory>/realm.conf
+```
+
+The worldserver process must have permission to create and replace files in this directory.
+
+The configured path is server-side only and is never written into the public `realm.conf`.
+
+### RealmConfig.RefreshIntervalSeconds
+
+Controls how often the module checks the database for configuration changes.
+
+When changes are detected, the public `realm.conf` is regenerated.
+
+Use the value documented in `mod_realm_config.conf.dist` for the supported range and default behavior.
+
+## Database
+
+The module uses three world database tables:
+
+```text
+mod_realm_config
+mod_realm_config_addon
+mod_realm_config_patch
+```
+
+### mod_realm_config
+
+Contains the singleton realm configuration used to generate the primary sections of `realm.conf`.
+
+This includes information for:
+
+```text
+[Realm]
+[Connection]
+[Client]
+[Portalkeeper]
+[Services]
+```
+
+Typical values include:
+
+- Realm name and description
+- Realm website
+- Server address and ports
+- Client version and build
+- Client executable and SHA-256
+- Minimum Portalkeeper version
+- Realm manifest URL
+- News feed URL
+- Status feed URL
+- Calendar feed URL
+- Armory feed URL
+- Canonical realm configuration URL
+
+The generated Schema version is controlled by the module and is not administrator data.
+
+### mod_realm_config_addon
+
+Contains zero or more addon definitions.
+
+Each enabled record becomes:
+
+```ini
+[Addon.<addon_key>]
+```
+
+There is no fixed limit on the number of addons a realm may publish.
+
+Addon records support:
+
+- Stable addon key
+- Display name
+- Requirement level
+- Source type
+- Source URL
+- Optional source reference
+- WoW addon installation directory
+- Administrator-controlled sort order
+- Enabled/disabled state
+
+Example conceptually:
+
+```text
+addon_key:         AutoTalentsUI
+name:              AutoTalentsUI
+requirement:       Required
+source_type:       GitHub
+source_url:        https://github.com/Hisha/AutoTalentsUI
+source_ref:        main
+install_directory: AutoTalentsUI
+sort_order:        10
+enabled:           1
+```
+
+This generates:
+
+```ini
+[Addon.AutoTalentsUI]
+Name=AutoTalentsUI
+Requirement=Required
+SourceType=GitHub
+SourceURL=https://github.com/Hisha/AutoTalentsUI
+Ref=main
+InstallDirectory=AutoTalentsUI
+```
+
+### mod_realm_config_patch
+
+Contains zero or more client patch definitions.
+
+Each enabled record becomes:
+
+```ini
+[Patch.<patch_key>]
+```
+
+Patch records support:
+
+- Stable patch key
+- Display name
+- Requirement level
+- Source type
+- Source URL
+- Target filename
+- Installation directory relative to the WoW client
+- Optional SHA-256 validation
+- Administrator-controlled sort order
+- Enabled/disabled state
+
+Example conceptually:
+
+```text
+patch_key:         LivingWorldAssets
+name:              Living World Assets
+requirement:       Required
+source_type:       HTTP
+source_url:        https://example.com/patch-L.MPQ
+file_name:         patch-L.MPQ
+install_directory: Data
+sha256:            <SHA-256>
+sort_order:        10
+enabled:           1
+```
+
+This generates:
+
+```ini
+[Patch.LivingWorldAssets]
+Name=Living World Assets
+Requirement=Required
+SourceType=HTTP
+SourceURL=https://example.com/patch-L.MPQ
+FileName=patch-L.MPQ
+InstallDirectory=Data
+SHA256=<SHA-256>
+```
+
+## Requirement Levels
+
+Addon and patch records support three requirement levels:
+
+### Required
+
+The component is required by the realm.
+
+Portalkeeper should ensure that the required component is present and valid before normal realm launch.
+
+### Recommended
+
+The realm recommends the component, but the player may choose not to install or use it.
+
+### Optional
+
+The component is available through the realm configuration but is not required or actively recommended.
+
+The canonical values are:
+
+```text
+Required
+Recommended
+Optional
+```
+
+## Source Types
+
+Schema v1 supports launcher resources from supported source types such as:
+
+```text
+GitHub
+HTTP
+```
+
+`SourceURL` identifies the source location.
+
+For sources that support references, such as GitHub, `Ref` may identify a branch, tag, or other source reference:
+
+```ini
+Ref=main
+```
+
+or:
+
+```ini
+Ref=v1.0.7
+```
+
+This allows a realm to track a branch or pin a particular release when appropriate.
+
+## realm.conf Schema v1
+
+`mod-realm-config` generates the public configuration in a deterministic INI-style format.
+
+The section order is:
+
+```text
+[Config]
+[Realm]
+[Connection]
+[Client]
+[Portalkeeper]
+[Services]
+[Addon.*]
+[Patch.*]
+```
+
+A representative configuration looks like:
+
+```ini
+# Generated by mod-realm-config.
+# Public configuration consumed by Portalkeeper.
+# Do not edit this file manually.
+
+[Config]
+SchemaVersion=1
+
+[Realm]
 Name=Example Realm
-Address=realm.example.com
+Description=Private Wrath of the Lich King realm
+WebsiteURL=https://example.com/
+
+[Connection]
+Address=example.com
 AuthPort=3724
 WorldPort=8085
-Description=
 
 [Client]
 Version=3.3.5a
 Build=12340
+Executable=Wow.exe
+ExecutableSHA256=
+
+[Portalkeeper]
+MinimumVersion=0.1.0
+
+[Services]
+ManifestURL=
+NewsURL=https://example.com/news.json
+StatusURL=
+CalendarURL=https://example.com/calendar.json
+ArmoryURL=https://example.com/armory/index.json
+ConfigURL=https://example.com/realm.conf
+
+[Addon.ExampleAddon]
+Name=Example Addon
+Requirement=Recommended
+SourceType=GitHub
+SourceURL=https://github.com/example/ExampleAddon
+Ref=main
+InstallDirectory=ExampleAddon
+
+[Patch.ExamplePatch]
+Name=Example Realm Patch
+Requirement=Optional
+SourceType=HTTP
+SourceURL=https://example.com/patch-X.MPQ
+FileName=patch-X.MPQ
+InstallDirectory=Data
+SHA256=
 ```
 
-If configured, `WebsiteURL` follows `Description`, and `[Updates]` with `UpdateURL`
-follows `[Client]`. The inspected Portalkeeper parser already reads the name, address,
-ports and UpdateURL. Its separate update must consume description, website and client
-policy fields, which it currently ignores. Current local discovery expects a
-non-example `*.realm.conf` bootstrap file (for example `my-realm.realm.conf`); the
-server publication remains `realm.conf`.
+## Schema Versioning
 
-Addon/patch schemas remain deferred. Add dedicated SQL metadata, validation and section
-serializers at `BuildConfiguration` once the launcher schema is finalized. This module
-does not download or validate addons/client files.
+Schema v1 is identified by:
 
-## Filesystem permissions and security
+```ini
+[Config]
+SchemaVersion=1
+```
 
-Worldserver requires write/search permission on the output directory and permission to
-create it if missing. The web server needs read access to `realm.conf` and search access
-to ancestor directories. Files inherit the process umask; replacing an old file does
-not preserve that file's custom permissions/ACLs. Set an appropriate umask/group policy.
-Only trusted accounts should be able to write this directory.
+Portalkeeper can use this value to determine whether it understands the realm configuration.
 
-The complete document is built/validated before writing. A unique staging directory
-inside the destination is restricted to its owner; the file is written, flushed and
-closed before rename over the publication. Normal failures clean up staging files.
-A process crash can leave `.realm-config-*` directories; clean these manually with the
-server stopped. Serve only the final file and disable directory listing.
+Future additions should remain backward-compatible wherever possible.
 
-Same-filesystem rename gives atomic replacement on normal POSIX filesystems. If the
-platform refuses replacement, the module logs failure and keeps the old file; it never
-deletes it first. No fsync is used, so this is not a power-loss durability guarantee.
-Multiple writers should not share an output destination.
+A new schema version should only be introduced when a change cannot be represented safely within the existing contract.
 
-Everything in the table's metadata columns is PUBLIC. An explicit fixed SELECT and
-serializer whitelist prevent unrelated columns/settings from being exported. The
-module uses the existing `WorldDatabase` connection; it never reads or publishes
-connection strings, SOAP/console credentials or other server configuration. Runtime
-access only needs SELECT on this table; your administrator performs updates. Do not
-store secrets or tokens in metadata, including URL query strings. Basic URL validation
-rejects embedded user information but cannot detect all sensitive content.
+## Realm Services
 
-## Compatibility and verification
+The `[Services]` section acts as Portalkeeper's discovery point for other public realm services.
 
-Requires C++17 and standard AzerothCore configuration, logging, WorldScript, database
-and callback APIs. Assumptions checked against upstream headers:
-[WorldScript hooks](https://github.com/azerothcore/azerothcore-wotlk/blob/master/src/server/game/Scripting/ScriptDefines/WorldScript.h),
-[database queries](https://github.com/azerothcore/azerothcore-wotlk/blob/master/src/server/database/Database/DatabaseWorkerPool.h),
-[QueryCallback](https://github.com/azerothcore/azerothcore-wotlk/blob/master/src/server/database/Database/QueryCallback.h).
-Raw fixed SQL avoids requiring core prepared-statement registration. Numeric columns
-are selected with CAST AS CHAR so Field::Get<std::string> matches their result type.
+Schema v1 defines:
 
-See `VERIFICATION.md`. A full AzerothCore build and live MySQL integration were not
-available; the supplied standalone harness compiles and tests the real module using
-API doubles. Keep that separate verification archive outside the module source tree.
+```ini
+[Services]
+ManifestURL=
+NewsURL=
+StatusURL=
+CalendarURL=
+ArmoryURL=
+ConfigURL=
+```
+
+### ManifestURL
+
+Optional URL for a broader realm manifest or service index.
+
+### NewsURL
+
+Optional public news feed, such as one generated by `mod-realm-news`.
+
+### StatusURL
+
+Optional realm status feed.
+
+### CalendarURL
+
+Optional realm calendar feed.
+
+### ArmoryURL
+
+Optional public character roster or armory feed, such as one generated by `mod-realm-armory`.
+
+### ConfigURL
+
+Canonical URL where Portalkeeper can retrieve an updated copy of this realm's `realm.conf`.
+
+Empty optional URLs are valid and may be ignored by Portalkeeper.
+
+## Client Validation
+
+The `[Client]` section describes the WoW client expected by the realm:
+
+```ini
+[Client]
+Version=3.3.5a
+Build=12340
+Executable=Wow.exe
+ExecutableSHA256=
+```
+
+The module describes compatibility requirements only.
+
+It does **not** distribute the World of Warcraft client.
+
+Portalkeeper is responsible for locating and validating the user's existing client installation.
+
+## Addon Installation
+
+`InstallDirectory` identifies the addon directory underneath:
+
+```text
+Interface/AddOns/
+```
+
+For example:
+
+```ini
+InstallDirectory=AutoTalentsUI
+```
+
+corresponds to:
+
+```text
+Interface/AddOns/AutoTalentsUI
+```
+
+Absolute player filesystem paths are never stored in `realm.conf`.
+
+## Patch Installation
+
+Patch `InstallDirectory` values are relative to the WoW client root.
+
+For example:
+
+```ini
+InstallDirectory=Data
+FileName=patch-L.MPQ
+```
+
+describes:
+
+```text
+<WoW Client>/Data/patch-L.MPQ
+```
+
+Portalkeeper is responsible for resolving the actual local WoW installation directory.
+
+## Deterministic Generation
+
+The generated file uses stable section and field ordering.
+
+Addon and patch records are ordered using their configured sort order with a stable secondary key.
+
+Unchanged database configuration should therefore produce unchanged `realm.conf` content.
+
+This makes the file suitable for caching, comparison, synchronization, and launcher-side update detection.
+
+## Safe Publishing
+
+The module does not directly overwrite the live configuration while constructing it.
+
+The general publishing process is:
+
+1. Load configuration from the world database.
+2. Validate the complete configuration.
+3. Generate the complete `realm.conf`.
+4. Write to a temporary file.
+5. Verify the write completed successfully.
+6. Replace the published file.
+
+If validation or publishing fails, the existing known-good `realm.conf` is preserved whenever possible.
+
+## Validation
+
+The module validates configuration before publishing.
+
+Validation includes appropriate checks for:
+
+- Required realm information
+- Network ports
+- Client build information
+- Addon and patch keys
+- Requirement values
+- Source types
+- Source URLs
+- Installation paths
+- SHA-256 values
+- Duplicate section keys
+
+Invalid enabled addon or patch records are not silently published as broken launcher configuration.
+
+Validation failures are reported through AzerothCore logging and prevent an invalid configuration from replacing the last known-good file.
+
+## Security
+
+**`realm.conf` must be treated as public data.**
+
+The module intentionally publishes only explicitly supported launcher-facing fields.
+
+It must never be used to expose:
+
+- Database connection strings
+- Database usernames or passwords
+- SOAP credentials
+- API keys or tokens
+- Private server filesystem information
+- Internal worldserver settings
+- Administrator credentials
+- Player credentials
+
+Server-side operational settings such as `RealmConfig.OutputDirectory` remain in the module configuration and are not included in the generated public manifest.
+
+## Relationship to Portalkeeper
+
+Portalkeeper is a separate launcher project:
+
+https://github.com/Hisha/Portalkeeper
+
+The intended relationship is:
+
+```text
+Realm Administrator
+       |
+       v
+mod-realm-config
+       |
+       v
+   realm.conf
+       |
+       v
+  Portalkeeper
+       |
+       +--> Validate client
+       +--> Configure realmlist
+       +--> Manage realm addons
+       +--> Manage realm patches
+       +--> Discover realm services
+       |
+       v
+      WoW
+```
+
+This keeps Portalkeeper independent from the AzerothCore database while allowing each realm to publish its own connection and client requirements.
+
+## License
+
+This module follows the licensing requirements of AzerothCore and any license included with this repository.
+
+## Related Projects
+
+- AzerothCore: https://www.azerothcore.org/
+- Portalkeeper: https://github.com/Hisha/Portalkeeper

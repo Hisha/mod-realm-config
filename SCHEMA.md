@@ -1,7 +1,11 @@
--- Import into the AzerothCore WORLD database. This table contains PUBLIC metadata.
--- One publication per world database; only row id=1 is consumed.
--- Re-importing preserves existing administrator values. Never store secrets here.
-CREATE TABLE IF NOT EXISTS `mod_realm_config` (
+# Final Schema v1 SQL tables
+
+Reference definitions after applying the incremental migration. Do not run this
+snapshot over an existing installation; use the migration instructions in README.
+All text columns are NOT NULL; empty strings represent optional unset values.
+
+```sql
+CREATE TABLE `mod_realm_config` (
   `id` TINYINT UNSIGNED NOT NULL,
   `name` VARCHAR(255) NOT NULL,
   `address` VARCHAR(255) NOT NULL,
@@ -23,7 +27,7 @@ CREATE TABLE IF NOT EXISTS `mod_realm_config` (
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE IF NOT EXISTS `mod_realm_config_addon` (
+CREATE TABLE `mod_realm_config_addon` (
   `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
   `addon_key` VARCHAR(64) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
   `name` VARCHAR(255) NOT NULL,
@@ -39,7 +43,7 @@ CREATE TABLE IF NOT EXISTS `mod_realm_config_addon` (
   KEY `idx_mod_realm_config_addon_publish` (`enabled`, `sort_order`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE IF NOT EXISTS `mod_realm_config_patch` (
+CREATE TABLE `mod_realm_config_patch` (
   `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
   `patch_key` VARCHAR(64) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
   `name` VARCHAR(255) NOT NULL,
@@ -55,10 +59,8 @@ CREATE TABLE IF NOT EXISTS `mod_realm_config_patch` (
   UNIQUE KEY `uq_mod_realm_config_patch_key` (`patch_key`),
   KEY `idx_mod_realm_config_patch_publish` (`enabled`, `sort_order`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+```
 
--- Safe example metadata lives ONLY in SQL; replace it before serving the file.
-INSERT INTO `mod_realm_config`
-  (`id`, `name`, `address`, `description`, `website_url`, `client_version`,
-   `client_build`, `auth_port`, `world_port`, `config_url`)
-SELECT 1, 'Example Realm', 'realm.example.com', '', '', '3.3.5a', 12340, 3724, 8085, ''
-WHERE NOT EXISTS (SELECT 1 FROM `mod_realm_config` WHERE `id` = 1);
+Section keys are case-insensitively unique. Runtime validation additionally enforces
+ASCII section identifiers, enums, hashes and safe paths. Only enabled=1 children and
+singleton id=1 are published. No child catalog rows are automatically seeded.
