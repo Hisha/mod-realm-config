@@ -86,12 +86,16 @@ SELECT
        sort_order,
        CONVERT(addon_key USING utf8mb4) COLLATE utf8mb4_unicode_ci,
 
+       /* f0-f5: addon data */
        CONVERT(name USING utf8mb4) COLLATE utf8mb4_unicode_ci,
        CONVERT(requirement USING utf8mb4) COLLATE utf8mb4_unicode_ci,
        CONVERT(source_type USING utf8mb4) COLLATE utf8mb4_unicode_ci,
        CONVERT(source_url USING utf8mb4) COLLATE utf8mb4_unicode_ci,
        CONVERT(source_ref USING utf8mb4) COLLATE utf8mb4_unicode_ci,
        CONVERT(install_directory USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+
+       /* f6-f16: unused for addons = 11 blanks */
+       CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
        CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
        CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
        CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
@@ -112,6 +116,7 @@ SELECT
        sort_order,
        CONVERT(patch_key USING utf8mb4) COLLATE utf8mb4_unicode_ci,
 
+       /* f0-f6: patch data */
        CONVERT(name USING utf8mb4) COLLATE utf8mb4_unicode_ci,
        CONVERT(requirement USING utf8mb4) COLLATE utf8mb4_unicode_ci,
        CONVERT(source_type USING utf8mb4) COLLATE utf8mb4_unicode_ci,
@@ -119,6 +124,9 @@ SELECT
        CONVERT(file_name USING utf8mb4) COLLATE utf8mb4_unicode_ci,
        CONVERT(install_directory USING utf8mb4) COLLATE utf8mb4_unicode_ci,
        CONVERT(sha256 USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+
+       /* f7-f16: unused for patches = 10 blanks */
+       CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
        CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
        CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
        CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
