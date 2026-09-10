@@ -15,11 +15,11 @@ CREATE TABLE IF NOT EXISTS `mod_realm_config` (
   `client_executable` VARCHAR(255) NOT NULL DEFAULT 'Wow.exe',
   `client_executable_sha256` VARCHAR(64) NOT NULL DEFAULT '',
   `portalkeeper_minimum_version` VARCHAR(32) NOT NULL DEFAULT '0.1.0',
-  `manifest_url` TEXT NOT NULL,
-  `news_url` TEXT NOT NULL,
-  `status_url` TEXT NOT NULL,
-  `calendar_url` TEXT NOT NULL,
-  `armory_url` TEXT NOT NULL,
+  `manifest_url` TEXT NOT NULL DEFAULT '',
+  `news_url` TEXT NOT NULL DEFAULT '',
+  `status_url` TEXT NOT NULL DEFAULT '',
+  `calendar_url` TEXT NOT NULL DEFAULT '',
+  `armory_url` TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB
   DEFAULT CHARSET=utf8mb4
