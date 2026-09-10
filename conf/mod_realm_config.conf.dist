@@ -1,2 +1,16 @@
+# Operational controls only. ALL published realm.conf values are read from
+# world database table mod_realm_config, row id=1. See the module SQL and README.
+# Changes to database metadata are picked up automatically; no restart/reload needed.
+
+# 0 disables database refresh and file publication, leaving an existing file intact.
 RealmConfig.Enable = 1
-RealmConfig.OutputDirectory = "/mnt/ai_data/linkable/example.realm.conf"
+
+# Writable destination directory; created when possible. Relative paths resolve
+# against worldserver's working directory. A trailing slash is optional.
+# This path is never included in realm.conf. Configure HTTP hosting separately.
+RealmConfig.OutputDirectory = "realm-config"
+
+# Check for committed database changes every 1..86400 seconds (default: 30).
+# Unchanged data does not rewrite the file or produce routine success logs.
+# Operational config changes require reload config (or restart).
+RealmConfig.RefreshIntervalSeconds = 30
