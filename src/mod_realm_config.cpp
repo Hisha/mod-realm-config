@@ -450,7 +450,7 @@ struct TemporaryDirectory
 
 fs::path PublishConfiguration(Settings const& settings, std::string const& output)
 {
-    fs::path directory = fs::u8path(settings.OutputDirectory);
+	fs::path directory = fs::path(settings.OutputDirectory);
     fs::create_directories(directory);
     // Atomically reserve a private staging name, avoiding symlinks and concurrent writers.
     // The staged file stays on the destination filesystem for the final rename.
@@ -530,7 +530,7 @@ private:
             auto settings = LoadMetadata(result, _directory);
             ValidateSettings(settings);
             auto output = BuildConfiguration(settings);
-            auto target = fs::u8path(_directory) / "realm.conf";
+            auto target = fs::path(_directory) / "realm.conf";
             if (output != _lastOutput || target != _lastTarget || !fs::is_regular_file(target))
             {
                 PublishConfiguration(settings, output);
