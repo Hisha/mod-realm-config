@@ -7,6 +7,7 @@ All text columns are NOT NULL; empty strings represent optional unset values.
 ```sql
 CREATE TABLE `mod_realm_config` (
   `id` TINYINT UNSIGNED NOT NULL,
+  `realm_key` VARCHAR(64) NOT NULL,
   `name` VARCHAR(255) NOT NULL,
   `address` VARCHAR(255) NOT NULL,
   `description` VARCHAR(2048) NOT NULL DEFAULT '',
