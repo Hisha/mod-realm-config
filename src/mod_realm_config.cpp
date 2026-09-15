@@ -4,6 +4,8 @@
 #include "QueryResult.h"
 #include "Log.h"
 #include "ScriptMgr.h"
+#include "World.h"
+#include "Realm.h"
 
 #include <atomic>
 #include <chrono>
@@ -27,9 +29,17 @@ struct Addon
     std::string Key, Name, Requirement, SourceType, SourceURL, Ref, InstallDirectory;
 };
 
+enum class PatchInstallMode { File, WowPatch };
+
 struct Patch
 {
     std::string Key, Name, Requirement, SourceType, SourceURL, FileName, InstallDirectory, SHA256;
+    PatchInstallMode InstallMode = PatchInstallMode::File;
+};
+
+struct ActiveContentBuild
+{
+    std::string Number, RealmName, FileName, SHA256;
 };
 
 struct Settings
@@ -47,13 +57,15 @@ struct Settings
     std::string ConfigURL;
     std::string Executable, ExecutableSHA256, MinimumVersion;
     std::string ManifestURL, NewsURL, StatusURL, CalendarURL, ArmoryURL;
+    std::string ContentBaseURL;
+    std::vector<ActiveContentBuild> ActiveBuilds;
     std::vector<Addon> Addons;
     std::vector<Patch> Patches;
 };
 
-// One statement gives a consistent snapshot across all three InnoDB tables.
+// One statement gives a consistent snapshot of our InnoDB tables and optional ACTIVE builds.
 // Empty catalogs still return the singleton; any missing table/query error fails closed.
-// Control columns type/order/key precede 18 explicitly whitelisted text columns.
+// Control columns type/order/key precede 19 explicitly whitelisted text columns.
 constexpr char MetadataQuery[] = R"SQL(
 SELECT
        CONVERT('0' USING utf8mb4) COLLATE utf8mb4_unicode_ci AS record_type,
@@ -76,7 +88,8 @@ SELECT
        CONVERT(news_url USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f14,
        CONVERT(status_url USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f15,
        CONVERT(calendar_url USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f16,
-       CONVERT(armory_url USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f17
+       CONVERT(armory_url USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f17,
+       CONVERT(content_base_url USING utf8mb4) COLLATE utf8mb4_unicode_ci AS f18
 FROM mod_realm_config
 WHERE id = 1
 UNION ALL
@@ -90,6 +103,7 @@ SELECT
        CONVERT(source_url USING utf8mb4) COLLATE utf8mb4_unicode_ci,
        CONVERT(source_ref USING utf8mb4) COLLATE utf8mb4_unicode_ci,
        CONVERT(install_directory USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+       CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
        CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
        CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
        CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
@@ -126,17 +140,65 @@ SELECT
        CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
        CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
        CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+       CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
        CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci
 FROM mod_realm_config_patch
 WHERE enabled = 1
-ORDER BY record_type, sort_order, BINARY record_key
 )SQL";
+
+// COUNT returns a row even when Content Manager is absent. A query failure must
+// not be mistaken for absence. Checking columns also detects incompatible installs.
+constexpr char ContentContractQuery[] = R"SQL(
+SELECT
+    (SELECT COUNT(*) FROM information_schema.TABLES
+     WHERE TABLE_SCHEMA = DATABASE() AND BINARY TABLE_NAME = 'content_manager_build'),
+    (SELECT COUNT(*) FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND BINARY TABLE_NAME = 'content_manager_build'
+       AND COLUMN_NAME IN ('build_number', 'realm_name', 'filename', 'sha256', 'state'))
+)SQL";
+
+bool ReadContentContract(QueryResult const& result)
+{
+    if (!result || result->GetFieldCount() != 2)
+        throw std::runtime_error("Content Manager contract detection failed; check database permissions/logs");
+    Field* fields = result->Fetch();
+    if (fields[0].IsNull() || fields[1].IsNull())
+        throw std::runtime_error("unexpected Content Manager contract detection result");
+    if (fields[0].Get<uint64>() == 0) return false;
+    if (fields[0].Get<uint64>() != 1 || fields[1].Get<uint64>() != 5)
+        throw std::runtime_error("incompatible content_manager_build contract; expected build_number, realm_name, filename, sha256 and state");
+    return true;
+}
+
+std::string MetadataSQL(bool withContent)
+{
+    std::string sql = MetadataQuery;
+    if (withContent)
+    {
+        sql += R"SQL(
+UNION ALL
+SELECT CONVERT('3' USING utf8mb4) COLLATE utf8mb4_unicode_ci, 0,
+       CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+       CONVERT(CAST(build_number AS CHAR) USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+       CONVERT(realm_name USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+       CONVERT(filename USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+       CONVERT(sha256 USING utf8mb4) COLLATE utf8mb4_unicode_ci
+)SQL";
+        for (unsigned i = 4; i < 19; ++i)
+            sql += ", CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci";
+        // Deliberately do not filter by realm or LIMIT 1: multiple ACTIVE rows
+        // anywhere in this world database are ambiguous and must be rejected.
+        sql += " FROM content_manager_build WHERE BINARY state = 'ACTIVE'\n";
+    }
+    sql += "ORDER BY record_type, sort_order, BINARY record_key";
+    return sql;
+}
 
 Settings LoadMetadata(QueryResult const& result, std::string const& directory)
 {
     if (!result)
         throw std::runtime_error("Schema v1 SQL query failed or singleton id=1 is missing; apply module migrations and check database logs");
-    if (result->GetFieldCount() != 21)
+    if (result->GetFieldCount() != 22)
         throw std::runtime_error("unexpected Schema v1 SQL result shape");
     Settings settings;
     settings.OutputDirectory = directory;
@@ -144,7 +206,7 @@ Settings LoadMetadata(QueryResult const& result, std::string const& directory)
     do
     {
         Field* fields = result->Fetch();
-        for (unsigned i = 0; i < 21; ++i)
+        for (unsigned i = 0; i < 22; ++i)
             if (fields[i].IsNull())
                 throw std::runtime_error("mod_realm_config SQL data contains an unexpected NULL");
         auto value = [fields](unsigned i) { return fields[i + 3].Get<std::string>(); };
@@ -171,6 +233,7 @@ Settings LoadMetadata(QueryResult const& result, std::string const& directory)
             settings.StatusURL = value(15);
             settings.CalendarURL = value(16);
             settings.ArmoryURL = value(17);
+            settings.ContentBaseURL = value(18);
         }
         else if (type == "1")
             settings.Addons.push_back({fields[2].Get<std::string>(), value(0), value(1),
@@ -178,6 +241,8 @@ Settings LoadMetadata(QueryResult const& result, std::string const& directory)
         else if (type == "2")
             settings.Patches.push_back({fields[2].Get<std::string>(), value(0), value(1),
                 value(2), value(3), value(4), value(5), value(6)});
+        else if (type == "3")
+            settings.ActiveBuilds.push_back({value(0), value(1), value(2), value(3)});
         else throw std::runtime_error("unexpected Schema v1 SQL record type");
     } while (result->NextRow());
     if (!found) throw std::runtime_error("mod_realm_config singleton id=1 is missing");
@@ -371,8 +436,20 @@ void ValidateCatalogs(Settings& settings)
             if (!patchKeys.insert(FoldASCII(patch.Key)).second) throw std::runtime_error("duplicate patch key");
             ValidateText(patch.Name, "Name", true);
             ValidateSource(patch.Requirement, patch.SourceType, patch.SourceURL);
-            ValidateRelativePath(patch.FileName, "FileName", true);
-            ValidateRelativePath(patch.InstallDirectory, "InstallDirectory", false);
+            switch (patch.InstallMode)
+            {
+                case PatchInstallMode::File:
+                    ValidateRelativePath(patch.FileName, "FileName", true);
+                    ValidateRelativePath(patch.InstallDirectory, "InstallDirectory", false);
+                    break;
+                case PatchInstallMode::WowPatch:
+                    if (!patch.FileName.empty() || !patch.InstallDirectory.empty())
+                        throw std::runtime_error("WowPatch must not specify FileName or InstallDirectory");
+                    ValidateText(patch.SHA256, "WowPatch SHA256", true);
+                    break;
+                default:
+                    throw std::runtime_error("invalid patch InstallMode");
+            }
             ValidateHash(patch.SHA256, "SHA256");
         }
         catch (std::exception const& error)
@@ -381,6 +458,48 @@ void ValidateCatalogs(Settings& settings)
                 " in SQL sort order: " + error.what());
         }
     }
+}
+
+// Returns a status only for change-driven logging. No database writes or MPQ I/O.
+std::string SynthesizeRealmContent(Settings& settings, bool contentAvailable, std::string const& canonicalRealmName)
+{
+    if (!contentAvailable) return "unavailable";
+    if (settings.ActiveBuilds.size() > 1)
+        throw std::runtime_error("multiple ACTIVE Content Manager builds; refusing ambiguous realm content metadata");
+    if (settings.ActiveBuilds.empty()) return "available; no ACTIVE realm content build";
+    if (settings.ContentBaseURL.empty()) return "available; content_base_url is unset";
+
+    auto const& build = settings.ActiveBuilds.front();
+    ValidateText(canonicalRealmName, "current AzerothCore realm name", true);
+    ValidateText(build.RealmName, "Content Manager realm_name", true);
+    // Content Manager records realm.Name verbatim. The public display name in
+    // mod_realm_config may differ and is not the identity used for this comparison.
+    if (build.RealmName != canonicalRealmName)
+        return "available; ACTIVE build belongs to a different realm; not advertised";
+
+    auto number = build.Number;
+    ValidateNumber(number, "Content Manager build_number", UINT32_MAX);
+    ValidateRelativePath(build.FileName, "Content Manager filename", true);
+    // Content Manager generates ASCII artifact names. Reject URI delimiters and
+    // escapes rather than altering its authoritative filename during URL joining.
+    if (build.FileName.find_first_not_of(
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~") != std::string::npos)
+        throw std::runtime_error("Content Manager filename is not a literal URL path component");
+    ValidateURL(settings.ContentBaseURL, "content_base_url");
+    if (settings.ContentBaseURL.find_first_of("?#") != std::string::npos)
+        throw std::runtime_error("content_base_url must be a directory URL without query or fragment");
+    for (auto const& patch : settings.Patches)
+        if (FoldASCII(patch.Key) == "realm-content")
+            throw std::runtime_error("realm-content is reserved for Content Manager integration; rename or disable the enabled manual patch");
+
+    auto url = settings.ContentBaseURL;
+    while (url.back() == '/') url.pop_back(); // ValidateURL already required a nonempty authority.
+    url += "/" + build.FileName;
+    settings.Patches.push_back({"realm-content", build.RealmName + " Realm Content", "Required",
+        "HTTP", std::move(url), "", "", build.SHA256, PatchInstallMode::WowPatch});
+    // ValidateSettings subsequently validates the entire catalog using the same
+    // key/name/source/hash rules, plus the install-mode-specific destination rules.
+    return "available; ACTIVE realm content build " + number;
 }
 
 void ValidateSettings(Settings& settings)
@@ -441,9 +560,19 @@ std::string BuildConfiguration(Settings const& settings)
             {"Requirement", addon.Requirement}, {"SourceType", addon.SourceType},
             {"SourceURL", addon.SourceURL}, {"Ref", addon.Ref}, {"InstallDirectory", addon.InstallDirectory}});
     for (auto const& patch : settings.Patches)
-        AppendSection(output, ("Patch." + patch.Key).c_str(), {{"Name", patch.Name},
-            {"Requirement", patch.Requirement}, {"SourceType", patch.SourceType}, {"SourceURL", patch.SourceURL},
-            {"FileName", patch.FileName}, {"InstallDirectory", patch.InstallDirectory}, {"SHA256", patch.SHA256}});
+    {
+        Fields fields{{"Name", patch.Name}, {"Requirement", patch.Requirement},
+            {"SourceType", patch.SourceType}, {"SourceURL", patch.SourceURL}};
+        if (patch.InstallMode == PatchInstallMode::WowPatch)
+            fields.emplace_back("InstallMode", "WowPatch");
+        else
+        {
+            fields.emplace_back("FileName", patch.FileName);
+            fields.emplace_back("InstallDirectory", patch.InstallDirectory);
+        }
+        fields.emplace_back("SHA256", patch.SHA256);
+        AppendSection(output, ("Patch." + patch.Key).c_str(), fields);
+    }
     return output;
 }
 
@@ -512,6 +641,24 @@ public:
         // Query completion and all filesystem/state operations run on the world thread.
         if (_pending && _pending->InvokeIfReady()) _pending.reset();
         if (!_enabled) return;
+        // Start the second query only after the detection callback has been destroyed.
+        // Never replace _pending from inside its own callback.
+        if (_snapshotContent.has_value() && !_pending)
+        {
+            bool withContent = *_snapshotContent;
+            _snapshotContent.reset();
+            auto epoch = _epoch;
+            try
+            {
+                _pending.emplace(WorldDatabase.AsyncQuery(MetadataSQL(withContent)).WithCallback(
+                    [this, epoch, withContent](QueryResult result)
+                    {
+                        if (_enabled && epoch == _epoch) AcceptResult(result, withContent);
+                    }));
+            }
+            catch (std::exception const& error) { ReportFailure(error.what()); }
+            return;
+        }
         if (diff < _remaining) { _remaining -= diff; return; }
         _remaining = 0;
         if (_pending) return; // At most one outstanding query, even across config reloads.
@@ -519,10 +666,12 @@ public:
         auto epoch = _epoch;
         try
         {
-            _pending.emplace(WorldDatabase.AsyncQuery(MetadataQuery).WithCallback(
+            _pending.emplace(WorldDatabase.AsyncQuery(ContentContractQuery).WithCallback(
                 [this, epoch](QueryResult result)
                 {
-                    if (_enabled && epoch == _epoch) AcceptResult(result);
+                    if (!_enabled || epoch != _epoch) return;
+                    try { _snapshotContent = ReadContentContract(result); }
+                    catch (std::exception const& error) { ReportFailure(error.what()); }
                 }));
         }
         catch (std::exception const& error) { ReportFailure(error.what()); }
@@ -537,11 +686,12 @@ private:
         _lastError = message;
     }
 
-    void AcceptResult(QueryResult const& result)
+    void AcceptResult(QueryResult const& result, bool withContent)
     {
         try
         {
             auto settings = LoadMetadata(result, _directory);
+            auto contentStatus = SynthesizeRealmContent(settings, withContent, realm.Name);
             ValidateSettings(settings);
             auto output = BuildConfiguration(settings);
             auto target = fs::path(_directory) / RealmConfigFileName(settings);
@@ -555,6 +705,11 @@ private:
             }
             else if (!_lastError.empty())
                 LOG_INFO("module", "mod-realm-config: database refresh recovered; published metadata is current");
+            if (contentStatus != _lastContentStatus)
+            {
+                LOG_INFO("module", "mod-realm-config: Content Manager integration {}", contentStatus);
+                _lastContentStatus = std::move(contentStatus);
+            }
             _lastError.clear();
         }
         catch (std::exception const& error) { ReportFailure(error.what()); }
@@ -562,6 +717,7 @@ private:
 
     void ReloadSettings()
     {
+        _snapshotContent.reset();
         ++_epoch; // Discard any result queued under an older operational configuration.
         _enabled = false;
         try
@@ -579,8 +735,9 @@ private:
             _remaining = _interval;
             _enabled = true;
             LOG_INFO("module", "mod-realm-config: enabled; checking world database every {} seconds", seconds);
-            // One synchronous read at startup/manual config reload; periodic reads are asynchronous.
-            AcceptResult(WorldDatabase.Query(MetadataQuery));
+            // Synchronous detection and snapshot at startup/reload; asynchronous during refresh.
+            bool withContent = ReadContentContract(WorldDatabase.Query(ContentContractQuery));
+            AcceptResult(WorldDatabase.Query(MetadataSQL(withContent)), withContent);
         }
         catch (std::exception const& error) { ReportFailure(error.what()); }
     }
@@ -595,6 +752,8 @@ private:
     fs::path _lastTarget;
     std::string _lastError;
     std::optional<QueryCallback> _pending;
+    std::optional<bool> _snapshotContent;
+    std::string _lastContentStatus;
 };
 }
 

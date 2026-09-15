@@ -1,6 +1,6 @@
 # Final Schema v1 SQL tables
 
-Reference definitions after applying the incremental migration. Do not run this
+Reference definitions after applying the content_base_url incremental migration. Do not run this
 snapshot over an existing installation; use the migration instructions in README.
 All text columns are NOT NULL; empty strings represent optional unset values.
 
@@ -25,6 +25,7 @@ CREATE TABLE `mod_realm_config` (
   `status_url` VARCHAR(2048) NOT NULL DEFAULT '',
   `calendar_url` VARCHAR(2048) NOT NULL DEFAULT '',
   `armory_url` VARCHAR(2048) NOT NULL DEFAULT '',
+  `content_base_url` VARCHAR(1024) NOT NULL DEFAULT '',
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -65,3 +66,29 @@ CREATE TABLE `mod_realm_config_patch` (
 Section keys are case-insensitively unique. Runtime validation additionally enforces
 ASCII section identifiers, enums, hashes and safe paths. Only enabled=1 children and
 singleton id=1 are published. No child catalog rows are automatically seeded.
+
+## Optional Content Manager advertisement
+
+`mod_realm_config.content_base_url` is the only added column. It is the public
+HTTP(S) directory for Content Manager artifacts and defaults to empty (disabled).
+It is independent of `config_url`. Apply
+`data/sql/db-world/updates/2026_09_15_00_content_base_url.sql` to existing databases.
+The migration adds no columns to `mod_realm_config_patch` and changes no Content
+Manager tables or administrator rows.
+
+The optional external world table `content_manager_build` supplies the existing
+`build_number` (unsigned integer), `realm_name`, `filename`, `sha256`, and `state`
+columns. Only exact ACTIVE state is consumed. There must be at most one ACTIVE
+row globally; it must match canonical AzerothCore `realm.Name` exactly to be
+advertised. The public display name in this module is not the matching identity.
+
+The in-memory `realm-content` patch is `Required`, `HTTP`, and `InstallMode=WowPatch`.
+It uses the recorded SHA256 (nonempty, 64 hexadecimal characters) and the unchanged
+artifact filename joined to the configured base URL. No `FileName` or
+`InstallDirectory` is emitted. Portalkeeper owns the persistent client destination;
+server build filenames can change without changing that allocation.
+
+`realm-content` is case-insensitively reserved while a matching build and configured
+URL enable synthesis. Enabled manual collisions fail publication. Other manual
+patches retain their existing File semantics and output without an InstallMode
+column or emitted InstallMode field. Synthetic entries are never persisted.

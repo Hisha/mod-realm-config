@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS `mod_realm_config` (
   `status_url` VARCHAR(1024) NOT NULL DEFAULT '',
   `calendar_url` VARCHAR(1024) NOT NULL DEFAULT '',
   `armory_url` VARCHAR(1024) NOT NULL DEFAULT '',
+  `content_base_url` VARCHAR(1024) NOT NULL DEFAULT '',
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB
   DEFAULT CHARSET=utf8mb4

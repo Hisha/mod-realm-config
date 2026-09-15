@@ -65,7 +65,15 @@ Apply the base world database SQL:
 data/sql/db-world/base/mod_realm_config.sql
 ```
 
-Then rebuild AzerothCore normally.
+For an existing installation, apply this incremental world SQL update before
+starting the updated binary. Re-importing the base SQL alone does not add columns:
+
+```text
+data/sql/db-world/updates/2026_09_15_00_content_base_url.sql
+```
+
+The update is rerunnable and preserves existing data. Fresh installations need
+only the base SQL. Then rebuild AzerothCore normally.
 
 Copy the module configuration:
 
@@ -614,3 +622,105 @@ This module follows the licensing requirements of AzerothCore and any license in
 
 - AzerothCore: https://www.azerothcore.org/
 - Portalkeeper: https://github.com/Hisha/Portalkeeper
+## Optional ACTIVE realm content (WowPatch)
+
+The integration uses the world database and has no compile-time dependency on
+`mod-content-manager`. Realm Config discovers the optional `content_manager_build`
+table; absence is normal and does not produce recurring warnings.
+
+Responsibilities are deliberately separate:
+
+- **Content Manager** builds, hashes, activates, and publishes a versioned cumulative MPQ.
+- **Realm Config** advertises the matching ACTIVE artifact's public URL and recorded
+  hash as a required `InstallMode=WowPatch` entry.
+- **Portalkeeper** allocates and persists a safe `Data/patch-N.MPQ` destination, then
+  downloads, verifies, and updates that managed patch.
+
+`realm-content` is the stable logical patch identity. The server-side versioned
+filename changes with builds; Portalkeeper's allocated client filename remains
+stable. Realm Config does not allocate client filenames or inspect/copy/hash MPQs.
+
+### Configure the public content URL
+
+Only one new database column is needed: `mod_realm_config.content_base_url`.
+Its default is empty (no synthetic advertisement). Set the administrator-owned
+public directory URL on the existing Realm Config singleton:
+
+```sql
+UPDATE mod_realm_config
+SET content_base_url = 'https://example.com/download/'
+WHERE id = 1;
+```
+
+Here `id=1` identifies the module's existing singleton configuration row; it is
+not an AzerothCore realm ID. The URL is independent of `config_url` and is not
+an operational `.conf` setting. A trailing slash is optional. Use HTTP or HTTPS,
+with no credentials, query, or fragment. Artifact names are used unchanged and
+must be literal ASCII URL path components (letters, digits, `-._~`).
+
+Requirement is currently fixed to `Required`. No client destination policy is
+stored in the database for the generated patch. Manual patch tables are unchanged.
+
+### Matching and output
+
+Content Manager records AzerothCore's canonical `realm.Name`. Realm Config compares
+that stored `realm_name` exactly, including case, against the same runtime value.
+It does not compare against the independently editable public `mod_realm_config.name`
+or infer identity from the sanitized artifact filename. No realm name or realm ID
+is hard-coded. An ACTIVE build for another realm is not advertised.
+
+With the canonical name `Example Realm`, the generated entry looks like:
+
+```ini
+[Patch.realm-content]
+Name=Example Realm Realm Content
+Requirement=Required
+SourceType=HTTP
+SourceURL=https://example.com/download/Example-Realm-Content-000002.mpq
+InstallMode=WowPatch
+SHA256=<64 hexadecimal characters from the ACTIVE build>
+```
+
+The WowPatch section omits `FileName` and `InstallDirectory` entirely. Existing
+enabled manual patches keep their existing field order, `FileName`, and
+`InstallDirectory`; no `InstallMode` field is added to those entries.
+
+When a matching ACTIVE build and a configured base URL enable synthesis, an
+enabled manual `realm-content` key (case-insensitively) is a configuration conflict.
+Generation fails with a reserved-key diagnostic; no administrator row is changed.
+The generated patch exists only in memory, never in `mod_realm_config_patch`.
+
+### Refresh, validation, and failure behavior
+
+Each refresh first detects the optional table and its required columns using
+`information_schema`. The subsequent single UNION query reads Realm Config metadata
+and, only when the table exists, all exact `state='ACTIVE'` build rows together.
+Filename and hash always come from the same row in the same InnoDB snapshot.
+STAGED and SUPERSEDED builds are ignored. No ACTIVE build produces no synthetic
+patch. Multiple ACTIVE rows fail publication even if they belong to different
+realms; Realm Config never chooses one arbitrarily.
+
+A failed query, incompatible contract, invalid generated metadata, or reserved-key
+conflict preserves the last known-good file. A table removed between detection and
+the snapshot fails that refresh and is detected as absent on a later refresh.
+Keep schema changes separate from normal server operation.
+
+WowPatch uses the existing key/name/requirement/source/URL/hash validation, requires
+a nonempty SHA256, and has no client destination fields to validate. File-mode
+patch validation remains unchanged. A blank base URL disables synthesis; no ACTIVE
+build or a foreign-realm ACTIVE build omits the generated section on the next
+successful publication.
+
+The existing refresh interval (normally 30 seconds) detects new ACTIVE filenames
+and hashes, regenerating the file only when its contents change. Activating an
+older build automatically restores its URL/hash; no restart, reload, or special
+rollback handling is needed. Identical integration status messages and repeated
+identical validation errors are suppressed.
+
+### Focused tests
+
+Run `bash tests/run.sh` with C++17 `g++` (or `$CXX`) and Python 3. The standalone
+suite uses small AzerothCore API doubles to test the production metadata parser,
+validator, serializer, refresh callbacks, and publisher. SQL snapshot tests adapt
+MySQL text casts to SQLite; deployment still requires an AzerothCore build and
+validation of the migration on MySQL/MariaDB.
