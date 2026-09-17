@@ -2,7 +2,7 @@
 -- Apply to a Schema v1 world database only if you want this example catalog.
 -- Example download URLs are placeholders, not endorsed or verified resources.
 UPDATE `mod_realm_config`
-SET `name` = 'Example Realm', `address` = 'realm.example.com',
+SET `realm_key` = 'example', `name` = 'Example Realm', `address` = 'realm.example.com',
     `description` = '', `website_url` = '',
     `client_version` = '3.3.5a', `client_build` = 12340,
     `client_executable` = 'Wow.exe', `client_executable_sha256` = '',
