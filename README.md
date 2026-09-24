@@ -48,6 +48,7 @@ Portalkeeper does not require access to the AzerothCore database or private worl
 - AzerothCore WotLK
 - C++17 filesystem support
 - Access to the AzerothCore world database
+- Access to the AzerothCore auth database through the core's `LoginDatabase`
 - Write permission to the configured output directory
 
 ## Installation
@@ -373,6 +374,7 @@ SchemaVersion=1
 
 [Realm]
 Name=Example Realm
+GameRealmName=Example
 Description=Private Wrath of the Lich King realm
 WebsiteURL=https://example.com/
 
@@ -416,6 +418,19 @@ FileName=patch-X.MPQ
 InstallDirectory=Data
 SHA256=
 ```
+
+In `[Realm]`, `Name` is the administrator-controlled Portalkeeper display name
+from `mod_realm_config.name`. `GameRealmName` is the actual WoW realm name
+advertised by authserver. The module reads it from the auth database's
+`realmlist.name` row whose `id` matches the current worldserver `RealmID`.
+These names can differ; for example, `Name=Eitrigg Realm` and
+`GameRealmName=Eitrigg`. Portalkeeper can use `GameRealmName` for WoW 3.3.5a's
+`SET realmName` while continuing to use `Connection.Address` for `SET realmList`.
+No additional administrator-maintained column is needed.
+
+If the matching auth realmlist name is unavailable or invalid, the module logs
+a warning and omits `GameRealmName` from the generated file. Other fields keep
+their previous values and order; the display `Name` is never used as a guess.
 
 ## Schema Versioning
 
