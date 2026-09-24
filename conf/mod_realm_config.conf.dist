@@ -1,4 +1,5 @@
-# Operational controls only. ALL published realm.conf values are read from
+# Operational controls and Portalkeeper client runtime mode. Other published
+# realm.conf values are read from
 # world database tables mod_realm_config (id=1), mod_realm_config_addon and
 # mod_realm_config_patch. Apply the Schema v1 migration; see README.
 # Changes to database metadata are picked up automatically; no restart/reload needed.
@@ -15,3 +16,11 @@ RealmConfig.OutputDirectory = "/mnt/ai_data/linkable/"
 # Unchanged data does not rewrite the file or produce routine success logs.
 # Operational config changes require reload config (or restart).
 RealmConfig.RefreshIntervalSeconds = 30
+
+# Portalkeeper client runtime mode (case-insensitive: Legacy or Isolated).
+# Legacy uses the user's configured WoW client directly (default).
+# Isolated prepares and uses a Portalkeeper-managed per-realm client runtime,
+# retaining the user's configured WoW installation as the source client.
+# Invalid values log an error and fall back to Legacy. Reload config or restart
+# to apply changes. Published as RuntimeMode in the existing [Client] section.
+RealmConfig.Client.RuntimeMode = "Legacy"

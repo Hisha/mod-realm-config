@@ -86,7 +86,7 @@ Adjust the configuration for your environment and restart `worldserver`.
 
 ## Module Configuration
 
-Server-side operational settings are stored in:
+Server-side operational settings and the Portalkeeper client runtime mode are stored in:
 
 ```text
 conf/mod_realm_config.conf.dist
@@ -98,6 +98,7 @@ Example:
 RealmConfig.Enable = 1
 RealmConfig.OutputDirectory = "/mnt/ai_data/linkable/"
 RealmConfig.RefreshIntervalSeconds = 60
+RealmConfig.Client.RuntimeMode = "Legacy"
 ```
 
 ### RealmConfig.Enable
@@ -135,6 +136,20 @@ Controls how often the module checks the database for configuration changes.
 When changes are detected, the public `realm.conf` is regenerated.
 
 Use the value documented in `mod_realm_config.conf.dist` for the supported range and default behavior.
+
+### RealmConfig.Client.RuntimeMode
+
+Defaults to `Legacy`, including when the option is omitted. Accepted values are
+`Legacy` and `Isolated` (case-insensitive); the published value is normalized.
+
+- `Legacy`: Portalkeeper uses the user's configured WoW client directly.
+- `Isolated`: Portalkeeper prepares and uses a Portalkeeper-managed per-realm
+  client runtime, retaining the user's configured WoW installation as the source client.
+
+Invalid values log an error and fall back to `Legacy`. Reload config or restart
+worldserver to apply changes. The module publishes `RuntimeMode=Legacy` or
+`RuntimeMode=Isolated` in the existing `[Client]` section. This option lives only
+in the module configuration; no database migration is required.
 
 ## Database
 
@@ -371,6 +386,7 @@ Version=3.3.5a
 Build=12340
 Executable=Wow.exe
 ExecutableSHA256=
+RuntimeMode=Legacy
 
 [Portalkeeper]
 MinimumVersion=0.1.0
@@ -468,6 +484,7 @@ Version=3.3.5a
 Build=12340
 Executable=Wow.exe
 ExecutableSHA256=
+RuntimeMode=Legacy
 ```
 
 The module describes compatibility requirements only.

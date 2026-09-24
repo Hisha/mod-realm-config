@@ -52,6 +52,7 @@ struct Settings
     std::string WebsiteURL;
     std::string ClientVersion;
     std::string ClientBuild;
+    std::string ClientRuntimeMode = "Legacy";
     std::string AuthPort;
     std::string WorldPort;
     std::string ConfigURL;
@@ -550,7 +551,8 @@ std::string BuildConfiguration(Settings const& settings)
     AppendSection(output, "Connection", {{"Address", settings.Address},
         {"AuthPort", settings.AuthPort}, {"WorldPort", settings.WorldPort}});
     AppendSection(output, "Client", {{"Version", settings.ClientVersion}, {"Build", settings.ClientBuild},
-        {"Executable", settings.Executable}, {"ExecutableSHA256", settings.ExecutableSHA256}});
+        {"Executable", settings.Executable}, {"ExecutableSHA256", settings.ExecutableSHA256},
+        {"RuntimeMode", settings.ClientRuntimeMode}});
     AppendSection(output, "Portalkeeper", {{"MinimumVersion", settings.MinimumVersion}});
     AppendSection(output, "Services", {{"ManifestURL", settings.ManifestURL}, {"NewsURL", settings.NewsURL},
         {"StatusURL", settings.StatusURL}, {"CalendarURL", settings.CalendarURL},
@@ -691,6 +693,7 @@ private:
         try
         {
             auto settings = LoadMetadata(result, _directory);
+            settings.ClientRuntimeMode = _clientRuntimeMode;
             auto contentStatus = SynthesizeRealmContent(settings, withContent, realm.Name);
             ValidateSettings(settings);
             auto output = BuildConfiguration(settings);
@@ -731,6 +734,12 @@ private:
             ValidateText(_directory, "RealmConfig.OutputDirectory", true);
             auto seconds = sConfigMgr->GetOption<std::string>("RealmConfig.RefreshIntervalSeconds", "30");
             ValidateNumber(seconds, "RealmConfig.RefreshIntervalSeconds", 86400);
+            auto runtimeMode = FoldASCII(sConfigMgr->GetOption<std::string>("RealmConfig.Client.RuntimeMode", "Legacy"));
+            _clientRuntimeMode = "Legacy";
+            if (runtimeMode == "isolated")
+                _clientRuntimeMode = "Isolated";
+            else if (runtimeMode != "legacy")
+                LOG_ERROR("module", "mod-realm-config: invalid RealmConfig.Client.RuntimeMode; expected Legacy or Isolated; using Legacy");
             _interval = static_cast<uint32>(std::stoul(seconds)) * 1000;
             _remaining = _interval;
             _enabled = true;
@@ -748,6 +757,7 @@ private:
     uint32 _remaining = 30000;
     std::uint64_t _epoch = 0;
     std::string _directory;
+    std::string _clientRuntimeMode = "Legacy";
     std::string _lastOutput;
     fs::path _lastTarget;
     std::string _lastError;
