@@ -720,15 +720,13 @@ private:
         try
         {
             auto settings = LoadMetadata(result, _directory);
-<<<<<<< HEAD
             settings.ClientRuntimeMode = _clientRuntimeMode;
-=======
+
             std::string realmWarning;
             settings.GameRealmName = LoadGameRealmName(realmWarning);
             if (realmWarning != _lastRealmWarning && !realmWarning.empty())
                 LOG_WARN("module", "{}", realmWarning);
             _lastRealmWarning = std::move(realmWarning);
->>>>>>> branch 'main' of https://github.com/Hisha/mod-realm-config.git
             auto contentStatus = SynthesizeRealmContent(settings, withContent, realm.Name);
             ValidateSettings(settings);
             auto output = BuildConfiguration(settings);
