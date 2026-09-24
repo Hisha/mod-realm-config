@@ -14,6 +14,7 @@
 #include <fstream>
 #include <optional>
 #include <set>
+#include <map>
 #include <algorithm>
 #include <stdexcept>
 #include <string>
@@ -40,6 +41,9 @@ struct Patch
 struct ActiveContentBuild
 {
     std::string Number, RealmName, FileName, SHA256;
+    // Immutable client requirements recorded against this exact build by Content
+    // Manager (Schema 3). Sorted, deduplicated, copied from the ACTIVE row set.
+    std::vector<std::string> ClientRequirements;
 };
 
 struct Settings
@@ -61,6 +65,9 @@ struct Settings
     std::string ManifestURL, NewsURL, StatusURL, CalendarURL, ArmoryURL;
     std::string ContentBaseURL;
     std::vector<ActiveContentBuild> ActiveBuilds;
+    // Published semantic client requirements of the ACTIVE build being advertised.
+    // Empty when no owned ACTIVE build is advertised.
+    std::vector<std::string> ClientRequirements;
     std::vector<Addon> Addons;
     std::vector<Patch> Patches;
 };
@@ -148,6 +155,16 @@ FROM mod_realm_config_patch
 WHERE enabled = 1
 )SQL";
 
+// Optional Content Manager integration state discovered per refresh. `content`
+// tracks the build table contract; `requirements` additionally confirms the
+// Schema 3 client requirement table. Absence of the requirement table is a
+// pre-Schema-3 install whose existing builds naturally have no requirement rows.
+struct ContentContract
+{
+    bool content = false;
+    bool requirements = false;
+};
+
 // COUNT returns a row even when Content Manager is absent. A query failure must
 // not be mistaken for absence. Checking columns also detects incompatible installs.
 constexpr char ContentContractQuery[] = R"SQL(
@@ -156,26 +173,37 @@ SELECT
      WHERE TABLE_SCHEMA = DATABASE() AND BINARY TABLE_NAME = 'content_manager_build'),
     (SELECT COUNT(*) FROM information_schema.COLUMNS
      WHERE TABLE_SCHEMA = DATABASE() AND BINARY TABLE_NAME = 'content_manager_build'
-       AND COLUMN_NAME IN ('build_number', 'realm_name', 'filename', 'sha256', 'state'))
+       AND COLUMN_NAME IN ('build_number', 'realm_name', 'filename', 'sha256', 'state')),
+    (SELECT COUNT(*) FROM information_schema.TABLES
+     WHERE TABLE_SCHEMA = DATABASE() AND BINARY TABLE_NAME = 'content_manager_build_client_requirement'),
+    (SELECT COUNT(*) FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND BINARY TABLE_NAME = 'content_manager_build_client_requirement'
+       AND COLUMN_NAME IN ('build_number', 'requirement'))
 )SQL";
 
-bool ReadContentContract(QueryResult const& result)
+ContentContract ReadContentContract(QueryResult const& result)
 {
-    if (!result || result->GetFieldCount() != 2)
+    if (!result || result->GetFieldCount() != 4)
         throw std::runtime_error("Content Manager contract detection failed; check database permissions/logs");
     Field* fields = result->Fetch();
-    if (fields[0].IsNull() || fields[1].IsNull())
+    if (fields[0].IsNull() || fields[1].IsNull() || fields[2].IsNull() || fields[3].IsNull())
         throw std::runtime_error("unexpected Content Manager contract detection result");
-    if (fields[0].Get<uint64>() == 0) return false;
+    ContentContract contract;
+    if (fields[0].Get<uint64>() == 0) return contract;
     if (fields[0].Get<uint64>() != 1 || fields[1].Get<uint64>() != 5)
         throw std::runtime_error("incompatible content_manager_build contract; expected build_number, realm_name, filename, sha256 and state");
-    return true;
+    contract.content = true;
+    if (fields[2].Get<uint64>() == 0) return contract;
+    if (fields[2].Get<uint64>() != 1 || fields[3].Get<uint64>() != 2)
+        throw std::runtime_error("incompatible content_manager_build_client_requirement contract; expected build_number and requirement");
+    contract.requirements = true;
+    return contract;
 }
 
-std::string MetadataSQL(bool withContent)
+std::string MetadataSQL(ContentContract const& contract)
 {
     std::string sql = MetadataQuery;
-    if (withContent)
+    if (contract.content)
     {
         sql += R"SQL(
 UNION ALL
@@ -192,6 +220,22 @@ SELECT CONVERT('3' USING utf8mb4) COLLATE utf8mb4_unicode_ci, 0,
         // anywhere in this world database are ambiguous and must be rejected.
         sql += " FROM content_manager_build WHERE BINARY state = 'ACTIVE'\n";
     }
+    if (contract.requirements)
+    {
+        sql += R"SQL(
+UNION ALL
+SELECT CONVERT('4' USING utf8mb4) COLLATE utf8mb4_unicode_ci, 0,
+       CONVERT(requirement USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+       CONVERT(CAST(build_number AS CHAR) USING utf8mb4) COLLATE utf8mb4_unicode_ci
+)SQL";
+        for (unsigned i = 1; i < 19; ++i)
+            sql += ", CONVERT('' USING utf8mb4) COLLATE utf8mb4_unicode_ci";
+        // Requirements are immutable build metadata owned by Content Manager.
+        // Only the exact ACTIVE builds' rows are consumed; package/config state
+        // is never inspected here.
+        sql += " FROM content_manager_build_client_requirement "
+            "WHERE build_number IN (SELECT build_number FROM content_manager_build WHERE BINARY state = 'ACTIVE')\n";
+    }
     sql += "ORDER BY record_type, sort_order, BINARY record_key";
     return sql;
 }
@@ -205,6 +249,9 @@ Settings LoadMetadata(QueryResult const& result, std::string const& directory)
     Settings settings;
     settings.OutputDirectory = directory;
     bool found = false;
+    // Byte-wise sorted, deduplicated requirement sets keyed by build number,
+    // mirroring Content Manager's own requirement ordering.
+    std::map<std::string, std::set<std::string>> buildRequirements;
     do
     {
         Field* fields = result->Fetch();
@@ -244,10 +291,26 @@ Settings LoadMetadata(QueryResult const& result, std::string const& directory)
             settings.Patches.push_back({fields[2].Get<std::string>(), value(0), value(1),
                 value(2), value(3), value(4), value(5), value(6)});
         else if (type == "3")
-            settings.ActiveBuilds.push_back({value(0), value(1), value(2), value(3)});
+            settings.ActiveBuilds.push_back({value(0), value(1), value(2), value(3), {}});
+        else if (type == "4")
+            buildRequirements[fields[3].Get<std::string>()].insert(fields[2].Get<std::string>());
         else throw std::runtime_error("unexpected Schema v1 SQL record type");
     } while (result->NextRow());
     if (!found) throw std::runtime_error("mod_realm_config singleton id=1 is missing");
+    for (auto const& entry : buildRequirements)
+    {
+        bool matched = false;
+        for (auto const& build : settings.ActiveBuilds)
+            if (build.Number == entry.first) { matched = true; break; }
+        if (!matched)
+            throw std::runtime_error("Content Manager client requirements reference a build that is not ACTIVE in this snapshot");
+    }
+    for (auto& build : settings.ActiveBuilds)
+    {
+        auto it = buildRequirements.find(build.Number);
+        if (it != buildRequirements.end())
+            build.ClientRequirements.assign(it->second.begin(), it->second.end());
+    }
     return settings;
 }
 
@@ -365,6 +428,34 @@ void ValidateRealmKey(std::string const& value)
             return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-';
         }))
         throw std::runtime_error("mod_realm_config.realm_key must contain 1..64 lowercase ASCII letters, digits, underscores or hyphens");
+}
+
+// Boundary check for a semantic client requirement name from Content Manager.
+// This validates the published token format (1..64 safe ASCII characters, no
+// commas or whitespace) so the CSV value round-trips deterministically. It does
+// not duplicate Content Manager's supported-capability registry.
+void ValidateClientRequirement(std::string const& value)
+{
+    if (value.empty() || value.size() > 64 ||
+        !std::all_of(value.begin(), value.end(), [](unsigned char c)
+        {
+            return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
+        }))
+        throw std::runtime_error("Client.Requirements entries must contain 1..64 ASCII letters, digits, dots, underscores or hyphens");
+}
+
+void ValidateClientRequirements(Settings const& settings)
+{
+    for (std::size_t i = 0; i < settings.ClientRequirements.size(); ++i)
+    {
+        try { ValidateClientRequirement(settings.ClientRequirements[i]); }
+        catch (std::exception const& error)
+        {
+            throw std::runtime_error("Client.Requirements entry #" + std::to_string(i + 1) +
+                " in Content Manager build order: " + error.what());
+        }
+    }
 }
 
 void ValidateHash(std::string& value, char const* key)
@@ -499,6 +590,9 @@ std::string SynthesizeRealmContent(Settings& settings, bool contentAvailable, st
     url += "/" + build.FileName;
     settings.Patches.push_back({"realm-content", build.RealmName + " Realm Content", "Required",
         "HTTP", std::move(url), "", "", build.SHA256, PatchInstallMode::WowPatch});
+    // The advertised build is this realm's. Publish its immutable recorded client
+    // requirements; validation runs in ValidateSettings before BuildConfiguration.
+    settings.ClientRequirements = build.ClientRequirements;
     // ValidateSettings subsequently validates the entire catalog using the same
     // key/name/source/hash rules, plus the install-mode-specific destination rules.
     return "available; ACTIVE realm content build " + number;
@@ -529,6 +623,7 @@ void ValidateSettings(Settings& settings)
     ValidateURL(settings.StatusURL, "Services.StatusURL");
     ValidateURL(settings.CalendarURL, "Services.CalendarURL");
     ValidateURL(settings.ArmoryURL, "Services.ArmoryURL");
+    ValidateClientRequirements(settings);
     ValidateCatalogs(settings);
 }
 
@@ -563,6 +658,22 @@ void AppendSection(std::string& output, char const* name, Fields const& fields)
         output += field.first + "=" + field.second + "\n";
 }
 
+// Deterministic comma-separated rendering. Defensive normalization protects the
+// published form regardless of upstream vector order; the semantic strings are
+// never altered. Empty input renders as the empty value.
+std::string JoinClientRequirements(std::vector<std::string> requirements)
+{
+    std::sort(requirements.begin(), requirements.end());
+    requirements.erase(std::unique(requirements.begin(), requirements.end()), requirements.end());
+    std::string joined;
+    for (std::size_t i = 0; i < requirements.size(); ++i)
+    {
+        if (i) joined += ',';
+        joined += requirements[i];
+    }
+    return joined;
+}
+
 std::string BuildConfiguration(Settings const& settings)
 {
     std::string output = "# Generated by mod-realm-config.\n"
@@ -579,7 +690,8 @@ std::string BuildConfiguration(Settings const& settings)
         {"AuthPort", settings.AuthPort}, {"WorldPort", settings.WorldPort}});
     AppendSection(output, "Client", {{"Version", settings.ClientVersion}, {"Build", settings.ClientBuild},
         {"Executable", settings.Executable}, {"ExecutableSHA256", settings.ExecutableSHA256},
-        {"RuntimeMode", settings.ClientRuntimeMode}});
+        {"RuntimeMode", settings.ClientRuntimeMode},
+        {"Requirements", JoinClientRequirements(settings.ClientRequirements)}});
     AppendSection(output, "Portalkeeper", {{"MinimumVersion", settings.MinimumVersion}});
     AppendSection(output, "Services", {{"ManifestURL", settings.ManifestURL}, {"NewsURL", settings.NewsURL},
         {"StatusURL", settings.StatusURL}, {"CalendarURL", settings.CalendarURL},
@@ -674,15 +786,15 @@ public:
         // Never replace _pending from inside its own callback.
         if (_snapshotContent.has_value() && !_pending)
         {
-            bool withContent = *_snapshotContent;
+            ContentContract contract = *_snapshotContent;
             _snapshotContent.reset();
             auto epoch = _epoch;
             try
             {
-                _pending.emplace(WorldDatabase.AsyncQuery(MetadataSQL(withContent)).WithCallback(
-                    [this, epoch, withContent](QueryResult result)
+                _pending.emplace(WorldDatabase.AsyncQuery(MetadataSQL(contract)).WithCallback(
+                    [this, epoch, contract](QueryResult result)
                     {
-                        if (_enabled && epoch == _epoch) AcceptResult(result, withContent);
+                        if (_enabled && epoch == _epoch) AcceptResult(result, contract);
                     }));
             }
             catch (std::exception const& error) { ReportFailure(error.what()); }
@@ -715,7 +827,7 @@ private:
         _lastError = message;
     }
 
-    void AcceptResult(QueryResult const& result, bool withContent)
+    void AcceptResult(QueryResult const& result, ContentContract const& contract)
     {
         try
         {
@@ -727,7 +839,7 @@ private:
             if (realmWarning != _lastRealmWarning && !realmWarning.empty())
                 LOG_WARN("module", "{}", realmWarning);
             _lastRealmWarning = std::move(realmWarning);
-            auto contentStatus = SynthesizeRealmContent(settings, withContent, realm.Name);
+            auto contentStatus = SynthesizeRealmContent(settings, contract.content, realm.Name);
             ValidateSettings(settings);
             auto output = BuildConfiguration(settings);
             auto target = fs::path(_directory) / RealmConfigFileName(settings);
@@ -778,8 +890,8 @@ private:
             _enabled = true;
             LOG_INFO("module", "mod-realm-config: enabled; checking world database every {} seconds", seconds);
             // Synchronous detection and snapshot at startup/reload; asynchronous during refresh.
-            bool withContent = ReadContentContract(WorldDatabase.Query(ContentContractQuery));
-            AcceptResult(WorldDatabase.Query(MetadataSQL(withContent)), withContent);
+            auto contract = ReadContentContract(WorldDatabase.Query(ContentContractQuery));
+            AcceptResult(WorldDatabase.Query(MetadataSQL(contract)), contract);
         }
         catch (std::exception const& error) { ReportFailure(error.what()); }
     }
@@ -795,7 +907,7 @@ private:
     fs::path _lastTarget;
     std::string _lastError;
     std::optional<QueryCallback> _pending;
-    std::optional<bool> _snapshotContent;
+    std::optional<ContentContract> _snapshotContent;
     std::string _lastContentStatus;
     std::string _lastRealmWarning;
 };

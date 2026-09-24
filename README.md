@@ -11,6 +11,7 @@ The module provides a server-side source of truth for the information Portalkeep
 - Realm service and JSON feed locations
 - Required, recommended, and optional addons
 - Required, recommended, and optional client patches
+- Semantic client capabilities required by the ACTIVE content build
 
 The generated `realm.conf` is intended to be hosted somewhere accessible to Portalkeeper, such as a web server or other public download location.
 
@@ -389,6 +390,7 @@ Build=12340
 Executable=Wow.exe
 ExecutableSHA256=
 RuntimeMode=Legacy
+Requirements=
 
 [Portalkeeper]
 MinimumVersion=0.1.0
@@ -500,7 +502,33 @@ Build=12340
 Executable=Wow.exe
 ExecutableSHA256=
 RuntimeMode=Legacy
+Requirements=
 ```
+
+`Requirements` is a comma-separated list of semantic client capabilities required
+by the realm. It is empty unless the module is advertising an ACTIVE
+mod-content-manager build for this realm that recorded requirements.
+
+### Requirements
+
+`Requirements` describes what the realm's advertised client content needs from
+the client, using capability names recorded by Content Manager as immutable
+metadata of the ACTIVE build. It is published in the existing `[Client]` section,
+always emitted after `RuntimeMode` so that the public configuration remains
+deterministic. Entries are ASCII capability names, sorted and deduplicated, never
+comma-separated values with embedded commas.
+
+The current known capability is:
+
+- `protected-framexml`: the advertised content includes realm-provided
+  modifications to protected (server-controlled) FrameXML resources, and the
+  client must accept and load those overrides rather than reject them.
+
+Only the ACTIVE Content Manager build is authoritative for requirements. They are
+published only after the build is validated as owned by this realm and fully
+advertised (content URL present, all catalog rules pass). If recording or
+retrieval of requirements fails, the module fails safe and keeps the last known
+good published configuration rather than silently publishing an empty list.
 
 The module describes compatibility requirements only.
 
@@ -722,15 +750,41 @@ enabled manual `realm-content` key (case-insensitively) is a configuration confl
 Generation fails with a reserved-key diagnostic; no administrator row is changed.
 The generated patch exists only in memory, never in `mod_realm_config_patch`.
 
+The same ACTIVE build also contributes the client-side requirements recorded
+against it by Content Manager. These are published as `Client.Requirements` in the
+existing `[Client]` section (see [Requirements](#requirements)); when this realm's
+matching ACTIVE build is advertised, that line reflects the build's immutable
+requirement set:
+
+```ini
+[Client]
+Version=3.3.5a
+Build=12340
+Executable=Wow.exe
+ExecutableSHA256=
+RuntimeMode=Legacy
+Requirements=protected-framexml
+```
+
+Requirements come only from the exact ACTIVE build being advertised. Package
+state, patch hold, and pending configuration entries are never inspected.
+
 ### Refresh, validation, and failure behavior
 
-Each refresh first detects the optional table and its required columns using
+Each refresh first detects the optional tables and their required columns using
 `information_schema`. The subsequent single UNION query reads Realm Config metadata
-and, only when the table exists, all exact `state='ACTIVE'` build rows together.
+and, only when the tables exist, all exact `state='ACTIVE'` build rows together with
+the client requirements recorded against those builds.
 Filename and hash always come from the same row in the same InnoDB snapshot.
 STAGED and SUPERSEDED builds are ignored. No ACTIVE build produces no synthetic
 patch. Multiple ACTIVE rows fail publication even if they belong to different
 realms; Realm Config never chooses one arbitrarily.
+
+Installs without the Schema 3 requirement table are discovered as pre-Schema 3:
+their existing ACTIVE builds naturally have no requirement rows and publish an
+empty `Requirements=`. A requirement row referencing no ACTIVE build is a
+snapshot inconsistency and fails publication. Requirement retrieval, like every
+other snapshot query, fails safe on error.
 
 A failed query, incompatible contract, invalid generated metadata, or reserved-key
 conflict preserves the last known-good file. A table removed between detection and

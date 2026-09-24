@@ -76,11 +76,38 @@ It is independent of `config_url`. Apply
 The migration adds no columns to `mod_realm_config_patch` and changes no Content
 Manager tables or administrator rows.
 
-The optional external world table `content_manager_build` supplies the existing
-`build_number` (unsigned integer), `realm_name`, `filename`, `sha256`, and `state`
-columns. Only exact ACTIVE state is consumed. There must be at most one ACTIVE
-row globally; it must match canonical AzerothCore `realm.Name` exactly to be
-advertised. The public display name in this module is not the matching identity.
+The optional external world tables supply the existing Content Manager
+integration. `content_manager_build` provides `build_number` (unsigned integer),
+`realm_name`, `filename`, `sha256`, and `state`. Only exact ACTIVE state is
+consumed. There must be at most one ACTIVE row globally; it must match canonical
+AzerothCore `realm.Name` exactly to be advertised. The public display name in this
+module is not the matching identity.
+
+The Schema 3 tables added by Content Manager are:
+
+```sql
+CREATE TABLE `content_manager_build` (
+  `build_number` INT UNSIGNED NOT NULL,
+  -- realm_name, filename, sha256, state added by Content Manager
+  ...
+);
+
+CREATE TABLE `content_manager_build_client_requirement` (
+  `build_number` INT UNSIGNED NOT NULL,
+  `requirement` VARCHAR(64) COLLATE utf8mb4_bin NOT NULL,
+  PRIMARY KEY (`build_number`, `requirement`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+```
+
+The client requirement table is immutable build metadata recording the semantic
+client capabilities an ACTIVE build requires (currently `protected-framexml`).
+It is published only for the ACTIVE build this realm owns and fully advertises,
+as `Client.Requirements` (comma-separated, sorted, deduplicated), always emitted
+after `Client.RuntimeMode`. Entries must be 1..64 safe ASCII characters with no
+commas or whitespace. Installs without this table (pre-Schema 3) publish an empty
+`Requirements=`. Divergent requirement columns, or requirement rows referencing no
+ACTIVE build in the same snapshot, fail the refresh and preserve the last
+known-good file.
 
 The in-memory `realm-content` patch is `Required`, `HTTP`, and `InstallMode=WowPatch`.
 It uses the recorded SHA256 (nonempty, 64 hexadecimal characters) and the unchanged
